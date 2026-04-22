@@ -1011,7 +1011,10 @@ final class Holosun_RSR_Catalog_Plugin
                         var randomIndex = Math.floor(Math.random() * dealerUrls.length);
                         var url = dealerUrls[randomIndex];
                         if (typeof url === 'string' && url.length > 0) {
-                            window.location.href = url;
+                            var opened = window.open(url, '_blank', 'noopener,noreferrer');
+                            if (opened && typeof opened.opener !== 'undefined') {
+                                opened.opener = null;
+                            }
                         }
                     });
                 }
