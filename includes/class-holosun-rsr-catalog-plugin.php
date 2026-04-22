@@ -809,7 +809,8 @@ final class Holosun_RSR_Catalog_Plugin
             return '';
         }
 
-        $formatted = preg_replace('/^HS[\s\-_]*/i', '', $sku);
+        // Strip leading H/S prefix variants (HS, H-S, H_S, H S) for display and dealer redirects.
+        $formatted = preg_replace('/^H[\s\-_]*S[\s\-_]*/i', '', $sku);
         if (!is_string($formatted)) {
             return $sku;
         }
@@ -1026,6 +1027,12 @@ final class Holosun_RSR_Catalog_Plugin
                 var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
                 var items = Array.prototype.slice.call(root.querySelectorAll('.hrc-item'));
                 var total = items.length;
+                var normalizeSku = function (sku) {
+                    if (typeof sku !== 'string') {
+                        return '';
+                    }
+                    return sku.replace(/^H[\s\-_]*S[\s\-_]*/i, '').trim();
+                };
                 var buildDealerUrl = function (template, sku) {
                     if (typeof template !== 'string' || template.length === 0) {
                         return '';
@@ -1034,7 +1041,10 @@ final class Holosun_RSR_Catalog_Plugin
                         return '';
                     }
 
-                    var encodedSku = encodeURIComponent(sku);
+                    var encodedSku = encodeURIComponent(normalizeSku(sku));
+                    if (!encodedSku) {
+                        return '';
+                    }
 
                     if (template.indexOf('{sku}') !== -1 || template.indexOf('{SKU}') !== -1) {
                         return template.replace(/\{sku\}/ig, encodedSku);
@@ -1102,6 +1112,7 @@ final class Holosun_RSR_Catalog_Plugin
                             return;
                         }
                         var sku = (dealerButton.getAttribute('data-sku') || '').trim();
+                        sku = normalizeSku(sku);
                         if (!sku) {
                             return;
                         }
