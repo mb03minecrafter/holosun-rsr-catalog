@@ -753,7 +753,7 @@ final class Holosun_RSR_Catalog_Plugin
         $upper = strtoupper($fragment);
 
         // Terms that must stay all-caps.
-        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS');
+        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS', 'DRS', 'DPS', 'TH', 'AEMS', 'SCS');
         if (in_array($upper, $always_upper, true)) {
             return $upper;
         }
