@@ -111,6 +111,7 @@ final class Holosun_RSR_Catalog_Plugin
         $port = isset($input['ftp_port']) ? absint($input['ftp_port']) : 2222;
         $remote_path = isset($input['remote_path']) ? trim((string) wp_unslash($input['remote_path'])) : '/ftpdownloads/rsrinventory-new.zip';
         $markup_percent = isset($input['markup_percent']) ? (float) $input['markup_percent'] : 10.0;
+        $dealer_urls_input = isset($input['dealer_urls']) ? (string) wp_unslash($input['dealer_urls']) : '';
         $use_ssl = !empty($input['ftp_use_ssl']) ? '1' : '0';
 
         if ($port <= 0 || $port > 65535) {
@@ -137,6 +138,7 @@ final class Holosun_RSR_Catalog_Plugin
             'ftp_use_ssl' => $use_ssl,
             'remote_path' => sanitize_text_field($remote_path),
             'markup_percent' => (string) $markup_percent,
+            'dealer_urls' => self::sanitize_dealer_urls_option($dealer_urls_input),
         );
     }
 
@@ -151,6 +153,7 @@ final class Holosun_RSR_Catalog_Plugin
             'ftp_use_ssl' => '1',
             'remote_path' => '/ftpdownloads/rsrinventory-new.zip',
             'markup_percent' => '10',
+            'dealer_urls' => '',
         );
 
         $saved = get_option(self::OPTION_SETTINGS, array());
@@ -244,6 +247,13 @@ final class Holosun_RSR_Catalog_Plugin
                         <td>
                             <input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[markup_percent]" id="hrc_markup_percent" type="number" step="0.01" min="0" value="<?php echo esc_attr($settings['markup_percent']); ?>">
                             <p class="description">Displayed price = distributor price * (1 + markup/100). Example: 10 = 10% markup.</p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <th scope="row"><label for="hrc_dealer_urls">Dealer URLs</label></th>
+                        <td>
+                            <textarea name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[dealer_urls]" id="hrc_dealer_urls" rows="6" class="large-text code" placeholder="https://dealer-one.example&#10;https://dealer-two.example"><?php echo esc_textarea($settings['dealer_urls']); ?></textarea>
+                            <p class="description">One URL per line. The front-end "Visit Dealer" button will send users to a random URL from this list.</p>
                         </td>
                     </tr>
                     </tbody>
@@ -788,6 +798,71 @@ final class Holosun_RSR_Catalog_Plugin
         return ucfirst(strtolower($fragment));
     }
 
+    private static function sanitize_dealer_urls_option($raw)
+    {
+        $raw = (string) $raw;
+        if ($raw === '') {
+            return '';
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $raw);
+        if (!is_array($lines)) {
+            return '';
+        }
+
+        $valid_urls = array();
+        foreach ($lines as $line) {
+            $url = trim((string) $line);
+            if ($url === '') {
+                continue;
+            }
+
+            if (!preg_match('#^https?://#i', $url)) {
+                $url = 'https://' . $url;
+            }
+
+            $url = esc_url_raw($url);
+            if ($url === '') {
+                continue;
+            }
+
+            if (function_exists('wp_http_validate_url') && !wp_http_validate_url($url)) {
+                continue;
+            }
+
+            $valid_urls[$url] = true;
+        }
+
+        if (empty($valid_urls)) {
+            return '';
+        }
+
+        return implode("\n", array_keys($valid_urls));
+    }
+
+    private static function get_dealer_urls_from_option($raw)
+    {
+        $sanitized = self::sanitize_dealer_urls_option($raw);
+        if ($sanitized === '') {
+            return array();
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $sanitized);
+        if (!is_array($lines)) {
+            return array();
+        }
+
+        $urls = array();
+        foreach ($lines as $line) {
+            $url = trim((string) $line);
+            if ($url !== '') {
+                $urls[] = $url;
+            }
+        }
+
+        return $urls;
+    }
+
     private static function parse_decimal($value)
     {
         $value = (string) $value;
@@ -834,6 +909,9 @@ final class Holosun_RSR_Catalog_Plugin
     public static function render_products_shortcode($atts = array())
     {
         global $wpdb;
+
+        $settings = self::get_settings();
+        $dealer_urls = self::get_dealer_urls_from_option(isset($settings['dealer_urls']) ? $settings['dealer_urls'] : '');
 
         $table = self::get_table_name();
         $rows = $wpdb->get_results(
@@ -883,6 +961,13 @@ final class Holosun_RSR_Catalog_Plugin
                     <?php endif; ?>
                 </ul>
             </div>
+
+            <div class="hrc-actions">
+                <button type="button" class="hrc-dealer-btn" <?php disabled(empty($dealer_urls)); ?>>Visit Dealer</button>
+            </div>
+            <?php if (empty($dealer_urls)) : ?>
+                <div class="hrc-actions-help">Add dealer URLs in Settings -> Holosun RSR Catalog to enable this button.</div>
+            <?php endif; ?>
         </section>
         <script>
             (function () {
@@ -892,6 +977,8 @@ final class Holosun_RSR_Catalog_Plugin
                 }
                 var search = root.querySelector('.hrc-search');
                 var count = root.querySelector('.hrc-count');
+                var dealerButton = root.querySelector('.hrc-dealer-btn');
+                var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
                 var items = Array.prototype.slice.call(root.querySelectorAll('.hrc-item'));
                 var total = items.length;
                 var apply = function () {
@@ -914,6 +1001,19 @@ final class Holosun_RSR_Catalog_Plugin
                 };
                 if (search) {
                     search.addEventListener('input', apply);
+                }
+                if (dealerButton) {
+                    dealerButton.addEventListener('click', function (event) {
+                        event.preventDefault();
+                        if (!Array.isArray(dealerUrls) || dealerUrls.length === 0) {
+                            return;
+                        }
+                        var randomIndex = Math.floor(Math.random() * dealerUrls.length);
+                        var url = dealerUrls[randomIndex];
+                        if (typeof url === 'string' && url.length > 0) {
+                            window.location.href = url;
+                        }
+                    });
                 }
                 apply();
             })();
@@ -976,6 +1076,34 @@ final class Holosun_RSR_Catalog_Plugin
                 border: 1px solid #223141;
                 border-radius: 10px;
                 background: #0d161f;
+            }
+            .hrc-actions {
+                margin-top: 12px;
+            }
+            .hrc-dealer-btn {
+                width: 100%;
+                border: 0;
+                border-radius: 10px;
+                padding: 12px 14px;
+                background: #59c3ff;
+                color: #08121b;
+                font-weight: 700;
+                cursor: pointer;
+                transition: filter 0.2s ease;
+            }
+            .hrc-dealer-btn:hover {
+                filter: brightness(1.06);
+            }
+            .hrc-dealer-btn:disabled {
+                background: #2a3a4a;
+                color: #8ea1b6;
+                cursor: not-allowed;
+                filter: none;
+            }
+            .hrc-actions-help {
+                margin-top: 8px;
+                color: #91a6bc;
+                font-size: 0.85rem;
             }
             .hrc-list {
                 list-style: none;
