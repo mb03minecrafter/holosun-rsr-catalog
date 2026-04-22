@@ -999,7 +999,7 @@ final class Holosun_RSR_Catalog_Plugin
                                     <button
                                         type="button"
                                         class="hrc-item-dealer-btn"
-                                        data-sku="<?php echo esc_attr($raw_sku !== '' ? $raw_sku : $sku); ?>"
+                                        data-sku="<?php echo esc_attr($sku !== '' ? $sku : $raw_sku); ?>"
                                         <?php disabled(empty($dealer_urls)); ?>
                                     >Visit Dealer</button>
                                 </div>
