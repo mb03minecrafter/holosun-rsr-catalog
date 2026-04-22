@@ -690,49 +690,102 @@ final class Holosun_RSR_Catalog_Plugin
             return '';
         }
 
-        $letters_only = preg_replace('/[^A-Za-z]/', '', $value);
-        if (!is_string($letters_only) || $letters_only === '') {
+        $tokens = preg_split('/(\s+)/', $value, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if (!is_array($tokens)) {
             return trim($value);
         }
 
-        $has_lowercase = preg_match('/[a-z]/', $value) === 1;
-        if ($has_lowercase) {
-            return trim($value);
-        }
-
-        $parts = preg_split('/(\s+)/', $value, -1, PREG_SPLIT_DELIM_CAPTURE);
-        if (!is_array($parts)) {
-            return trim($value);
-        }
-
-        foreach ($parts as $idx => $part) {
-            if (trim($part) === '') {
+        foreach ($tokens as $idx => $token) {
+            if (trim($token) === '') {
                 continue;
             }
 
-            if (preg_match('/[0-9]/', $part) === 1) {
-                continue;
-            }
-
-            if (strpos($part, '-') !== false || strpos($part, '/') !== false) {
-                continue;
-            }
-
-            if (preg_match('/^[A-Z]+$/', $part) === 1) {
-                if (strlen($part) <= 2) {
-                    continue;
-                }
-                $parts[$idx] = ucfirst(strtolower($part));
-            }
+            $tokens[$idx] = self::normalize_catalog_token($token);
         }
 
-        $normalized = trim(implode('', $parts));
+        $normalized = trim(implode('', $tokens));
         $normalized = preg_replace('/\bH[\s\-]?Sun\b/i', 'Holosun', $normalized);
         if (!is_string($normalized)) {
             return trim($value);
         }
 
         return trim($normalized);
+    }
+
+    private static function normalize_catalog_token($token)
+    {
+        $token = (string) $token;
+
+        if (!preg_match('/^([^A-Za-z0-9]*)([A-Za-z0-9\/\-]+)([^A-Za-z0-9]*)$/', $token, $matches)) {
+            return $token;
+        }
+
+        $prefix = isset($matches[1]) ? (string) $matches[1] : '';
+        $core = isset($matches[2]) ? (string) $matches[2] : '';
+        $suffix = isset($matches[3]) ? (string) $matches[3] : '';
+
+        if ($core === '') {
+            return $token;
+        }
+
+        $parts = preg_split('/([\-\/])/', $core, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if (!is_array($parts)) {
+            return $token;
+        }
+
+        foreach ($parts as $idx => $part) {
+            if ($part === '-' || $part === '/') {
+                continue;
+            }
+            $parts[$idx] = self::normalize_catalog_fragment($part);
+        }
+
+        return $prefix . implode('', $parts) . $suffix;
+    }
+
+    private static function normalize_catalog_fragment($fragment)
+    {
+        $fragment = trim((string) $fragment);
+        if ($fragment === '') {
+            return '';
+        }
+
+        $upper = strtoupper($fragment);
+
+        // Terms that must stay all-caps.
+        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS');
+        if (in_array($upper, $always_upper, true)) {
+            return $upper;
+        }
+
+        // Color abbreviations should be expanded to words.
+        $color_map = array(
+            'RD' => 'Red',
+            'GD' => 'Gold',
+            'GR' => 'Green',
+        );
+        if (isset($color_map[$upper])) {
+            return $color_map[$upper];
+        }
+
+        if ($upper === 'HOLOSUN') {
+            return 'Holosun';
+        }
+
+        // Keep mixed alphanumeric model codes in uppercase (e.g., HS510C, 2MOA).
+        if (preg_match('/[0-9]/', $upper) === 1) {
+            return $upper;
+        }
+
+        if (preg_match('/^[A-Z]+$/', $upper) === 1) {
+            return ucfirst(strtolower($upper));
+        }
+
+        if (preg_match('/^[a-z]+$/', $fragment) === 1) {
+            return ucfirst($fragment);
+        }
+
+        return ucfirst(strtolower($fragment));
     }
 
     private static function parse_decimal($value)
