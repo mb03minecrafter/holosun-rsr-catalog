@@ -644,12 +644,16 @@ final class Holosun_RSR_Catalog_Plugin
         if ($product_name === '') {
             $product_name = $rsr_sku;
         }
+        $product_name = self::normalize_catalog_text($product_name);
+
+        $manufacturer = isset($columns[10]) ? trim((string) $columns[10]) : '';
+        $manufacturer = self::normalize_catalog_text($manufacturer);
 
         return array(
             'rsr_sku' => $rsr_sku,
             'upc' => isset($columns[1]) ? trim((string) $columns[1]) : '',
             'product_name' => $product_name,
-            'manufacturer' => isset($columns[10]) ? trim((string) $columns[10]) : '',
+            'manufacturer' => $manufacturer,
             'manufacturer_part_number' => isset($columns[11]) ? trim((string) $columns[11]) : '',
             'distributor_price' => self::parse_decimal(isset($columns[6]) ? $columns[6] : ''),
             'inventory_quantity' => self::parse_int_value(isset($columns[8]) ? $columns[8] : ''),
@@ -666,6 +670,69 @@ final class Holosun_RSR_Catalog_Plugin
         }
 
         return strpos($normalized, 'HOLOSUN') !== false;
+    }
+
+    private static function normalize_catalog_text($value)
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return '';
+        }
+
+        $value = preg_replace('/\s+/', ' ', $value);
+        if (!is_string($value)) {
+            return '';
+        }
+
+        // Normalize common abbreviated brand spellings to the preferred casing.
+        $value = preg_replace('/\bH[\s\-]?SUN\b/i', 'Holosun', $value);
+        if (!is_string($value)) {
+            return '';
+        }
+
+        $letters_only = preg_replace('/[^A-Za-z]/', '', $value);
+        if (!is_string($letters_only) || $letters_only === '') {
+            return trim($value);
+        }
+
+        $has_lowercase = preg_match('/[a-z]/', $value) === 1;
+        if ($has_lowercase) {
+            return trim($value);
+        }
+
+        $parts = preg_split('/(\s+)/', $value, -1, PREG_SPLIT_DELIM_CAPTURE);
+        if (!is_array($parts)) {
+            return trim($value);
+        }
+
+        foreach ($parts as $idx => $part) {
+            if (trim($part) === '') {
+                continue;
+            }
+
+            if (preg_match('/[0-9]/', $part) === 1) {
+                continue;
+            }
+
+            if (strpos($part, '-') !== false || strpos($part, '/') !== false) {
+                continue;
+            }
+
+            if (preg_match('/^[A-Z]+$/', $part) === 1) {
+                if (strlen($part) <= 2) {
+                    continue;
+                }
+                $parts[$idx] = ucfirst(strtolower($part));
+            }
+        }
+
+        $normalized = trim(implode('', $parts));
+        $normalized = preg_replace('/\bH[\s\-]?Sun\b/i', 'Holosun', $normalized);
+        if (!is_string($normalized)) {
+            return trim($value);
+        }
+
+        return trim($normalized);
     }
 
     private static function parse_decimal($value)
@@ -717,9 +784,9 @@ final class Holosun_RSR_Catalog_Plugin
 
         $table = self::get_table_name();
         $rows = $wpdb->get_results(
-            "SELECT rsr_sku, manufacturer_part_number, product_name, display_price, distributor_price, inventory_quantity
+            "SELECT rsr_sku, product_name, display_price
              FROM {$table}
-             ORDER BY product_name ASC"
+             ORDER BY display_price DESC, product_name ASC"
         );
 
         $container_id = 'hrc-list-' . wp_rand(1000, 999999);
@@ -729,12 +796,11 @@ final class Holosun_RSR_Catalog_Plugin
         ?>
         <section class="hrc-catalog-wrap" id="<?php echo esc_attr($container_id); ?>">
             <div class="hrc-head">
-                <h2>HOLOSUN Products</h2>
-                <div class="hrc-sub">Live RSR feed import with markup</div>
+                <h2>Holosun Product Lookup</h2>
             </div>
 
             <div class="hrc-search-row">
-                <input type="search" class="hrc-search" placeholder="Search by name, SKU, or part number">
+                <input type="search" class="hrc-search" placeholder="Search by name or SKU">
                 <span class="hrc-count"></span>
             </div>
 
@@ -744,28 +810,23 @@ final class Holosun_RSR_Catalog_Plugin
                         <?php foreach ($rows as $row) : ?>
                             <?php
                             $name = isset($row->product_name) ? (string) $row->product_name : '';
+                            $name = self::normalize_catalog_text($name);
                             $sku = isset($row->rsr_sku) ? (string) $row->rsr_sku : '';
-                            $mpn = isset($row->manufacturer_part_number) ? (string) $row->manufacturer_part_number : '';
                             $display_price = isset($row->display_price) ? (float) $row->display_price : 0;
-                            $inventory = isset($row->inventory_quantity) ? (int) $row->inventory_quantity : 0;
-                            $search_blob = strtolower(trim($name . ' ' . $sku . ' ' . $mpn));
+                            $search_blob = strtolower(trim($name . ' ' . $sku));
                             ?>
                             <li class="hrc-item" data-search="<?php echo esc_attr($search_blob); ?>">
                                 <div class="hrc-item-main">
                                     <div class="hrc-item-name"><?php echo esc_html($name); ?></div>
                                     <div class="hrc-item-meta">
                                         SKU: <?php echo esc_html($sku); ?>
-                                        <?php if ($mpn !== '') : ?>
-                                            | MPN: <?php echo esc_html($mpn); ?>
-                                        <?php endif; ?>
-                                        | Qty: <?php echo esc_html((string) $inventory); ?>
                                     </div>
                                 </div>
                                 <div class="hrc-item-price">$<?php echo esc_html(number_format($display_price, 2)); ?></div>
                             </li>
                         <?php endforeach; ?>
                     <?php else : ?>
-                        <li class="hrc-empty">No HOLOSUN products available yet. Run a sync from Settings → Holosun RSR Catalog.</li>
+                        <li class="hrc-empty">No Holosun products available yet. Run a sync from Settings -> Holosun RSR Catalog.</li>
                     <?php endif; ?>
                 </ul>
             </div>
@@ -831,11 +892,6 @@ final class Holosun_RSR_Catalog_Plugin
                 color: #ffffff;
                 font-size: 1.35rem;
                 line-height: 1.25;
-            }
-            .hrc-sub {
-                color: #8ea1b7;
-                font-size: 0.9rem;
-                margin-top: 4px;
             }
             .hrc-search-row {
                 margin-top: 14px;
@@ -1002,4 +1058,3 @@ final class Holosun_RSR_Catalog_Plugin
         return substr($haystack, -strlen($needle)) === $needle;
     }
 }
-
