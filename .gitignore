@@ -1,0 +1,17 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+
+# Node/build artifacts (future-proof)
+node_modules/
+dist/
+build/
+
+# Local env files
+.env
+.env.*
+
