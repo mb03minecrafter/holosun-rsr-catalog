@@ -763,7 +763,7 @@ final class Holosun_RSR_Catalog_Plugin
         $upper = strtoupper($fragment);
 
         // Terms that must stay all-caps.
-        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS', 'DRS', 'DPS', 'TH', 'AEMS', 'SCS');
+        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS', 'DRS', 'DPS', 'TH', 'AEMS', 'SCS', 'IR');
         if (in_array($upper, $always_upper, true)) {
             return $upper;
         }
@@ -796,6 +796,22 @@ final class Holosun_RSR_Catalog_Plugin
         }
 
         return ucfirst(strtolower($fragment));
+    }
+
+    private static function format_display_sku($sku)
+    {
+        $sku = trim((string) $sku);
+        if ($sku === '') {
+            return '';
+        }
+
+        $formatted = preg_replace('/^HS[\s\-_]*/i', '', $sku);
+        if (!is_string($formatted)) {
+            return $sku;
+        }
+
+        $formatted = trim($formatted);
+        return $formatted !== '' ? $formatted : $sku;
     }
 
     private static function sanitize_dealer_urls_option($raw)
@@ -942,9 +958,10 @@ final class Holosun_RSR_Catalog_Plugin
                             <?php
                             $name = isset($row->product_name) ? (string) $row->product_name : '';
                             $name = self::normalize_catalog_text($name);
-                            $sku = isset($row->rsr_sku) ? (string) $row->rsr_sku : '';
+                            $raw_sku = isset($row->rsr_sku) ? (string) $row->rsr_sku : '';
+                            $sku = self::format_display_sku($raw_sku);
                             $display_price = isset($row->display_price) ? (float) $row->display_price : 0;
-                            $search_blob = strtolower(trim($name . ' ' . $sku));
+                            $search_blob = strtolower(trim($name . ' ' . $sku . ' ' . $raw_sku));
                             ?>
                             <li class="hrc-item" data-search="<?php echo esc_attr($search_blob); ?>">
                                 <div class="hrc-item-main">
