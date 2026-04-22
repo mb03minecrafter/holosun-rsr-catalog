@@ -6,8 +6,8 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '1.0.0';
-    const DB_VERSION = '1.0.0';
+    const VERSION = '1.1.0';
+    const DB_VERSION = '1.1.0';
 
     const OPTION_SETTINGS = 'hrc_settings';
     const OPTION_DB_VERSION = 'hrc_db_version';
@@ -250,10 +250,10 @@ final class Holosun_RSR_Catalog_Plugin
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="hrc_dealer_urls">Dealer URLs</label></th>
+                        <th scope="row"><label for="hrc_dealer_urls">Dealer Search URLs</label></th>
                         <td>
-                            <textarea name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[dealer_urls]" id="hrc_dealer_urls" rows="6" class="large-text code" placeholder="https://dealer-one.example&#10;https://dealer-two.example"><?php echo esc_textarea($settings['dealer_urls']); ?></textarea>
-                            <p class="description">One URL per line. The front-end "Visit Dealer" button will send users to a random URL from this list.</p>
+                            <textarea name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[dealer_urls]" id="hrc_dealer_urls" rows="6" class="large-text code" placeholder="https://checkmatedefense.us/search.php?search_query={sku}&section=product&#10;https://fiddlersdefense.com/search/{sku}"><?php echo esc_textarea($settings['dealer_urls']); ?></textarea>
+                            <p class="description">One URL format per line. Use <code>{sku}</code> where the product SKU should go, or paste a sample URL that contains <code>HS507COMP</code>.</p>
                         </td>
                     </tr>
                     </tbody>
@@ -552,6 +552,7 @@ final class Holosun_RSR_Catalog_Plugin
 
             $distributor_price = (float) $parsed['distributor_price'];
             $display_price = round($distributor_price * $multiplier, 2);
+            $retail_map = (float) $parsed['retail_map'];
 
             $replace_result = $wpdb->replace(
                 $table,
@@ -562,6 +563,7 @@ final class Holosun_RSR_Catalog_Plugin
                     'manufacturer_part_number' => $parsed['manufacturer_part_number'],
                     'product_name' => $parsed['product_name'],
                     'distributor_price' => $distributor_price,
+                    'retail_map' => $retail_map,
                     'display_price' => $display_price,
                     'inventory_quantity' => $parsed['inventory_quantity'],
                     'allocation_status' => $parsed['allocation_status'],
@@ -576,6 +578,7 @@ final class Holosun_RSR_Catalog_Plugin
                     '%s', // manufacturer_part_number
                     '%s', // product_name
                     '%f', // distributor_price
+                    '%f', // retail_map
                     '%f', // display_price
                     '%d', // inventory_quantity
                     '%s', // allocation_status
@@ -666,6 +669,7 @@ final class Holosun_RSR_Catalog_Plugin
             'manufacturer' => $manufacturer,
             'manufacturer_part_number' => isset($columns[11]) ? trim((string) $columns[11]) : '',
             'distributor_price' => self::parse_decimal(isset($columns[6]) ? $columns[6] : ''),
+            'retail_map' => self::parse_decimal(isset($columns[70]) ? $columns[70] : ''),
             'inventory_quantity' => self::parse_int_value(isset($columns[8]) ? $columns[8] : ''),
             'allocation_status' => isset($columns[12]) ? trim((string) $columns[12]) : '',
         );
@@ -837,12 +841,23 @@ final class Holosun_RSR_Catalog_Plugin
                 $url = 'https://' . $url;
             }
 
-            $url = esc_url_raw($url);
-            if ($url === '') {
+            // Allow "{sku}" placeholders by swapping a sample token for validation.
+            $url_for_validation = preg_replace('/\{sku\}/i', 'HS507COMP', $url);
+            if (!is_string($url_for_validation)) {
                 continue;
             }
 
-            if (function_exists('wp_http_validate_url') && !wp_http_validate_url($url)) {
+            $validated = esc_url_raw($url_for_validation);
+            if ($validated === '') {
+                continue;
+            }
+
+            if (function_exists('wp_http_validate_url') && !wp_http_validate_url($validated)) {
+                continue;
+            }
+
+            $url = preg_replace('/\{sku\}/i', '{sku}', $url);
+            if (!is_string($url)) {
                 continue;
             }
 
@@ -931,7 +946,7 @@ final class Holosun_RSR_Catalog_Plugin
 
         $table = self::get_table_name();
         $rows = $wpdb->get_results(
-            "SELECT rsr_sku, product_name, display_price
+            "SELECT rsr_sku, product_name, display_price, retail_map
              FROM {$table}
              ORDER BY display_price DESC, product_name ASC"
         );
@@ -961,6 +976,8 @@ final class Holosun_RSR_Catalog_Plugin
                             $raw_sku = isset($row->rsr_sku) ? (string) $row->rsr_sku : '';
                             $sku = self::format_display_sku($raw_sku);
                             $display_price = isset($row->display_price) ? (float) $row->display_price : 0;
+                            $retail_map = isset($row->retail_map) ? (float) $row->retail_map : 0;
+                            $map_text = $retail_map > 0 ? '$' . number_format($retail_map, 2) : 'N/A';
                             $search_blob = strtolower(trim($name . ' ' . $sku . ' ' . $raw_sku));
                             ?>
                             <li class="hrc-item" data-search="<?php echo esc_attr($search_blob); ?>">
@@ -970,7 +987,22 @@ final class Holosun_RSR_Catalog_Plugin
                                         SKU: <?php echo esc_html($sku); ?>
                                     </div>
                                 </div>
-                                <div class="hrc-item-price">$<?php echo esc_html(number_format($display_price, 2)); ?></div>
+                                <div class="hrc-item-right">
+                                    <div class="hrc-price-block hrc-map-block">
+                                        <div class="hrc-price-label">MAP</div>
+                                        <div class="hrc-price-value"><?php echo esc_html($map_text); ?></div>
+                                    </div>
+                                    <div class="hrc-price-block hrc-price-block-main">
+                                        <div class="hrc-price-label">Price</div>
+                                        <div class="hrc-price-value">$<?php echo esc_html(number_format($display_price, 2)); ?></div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        class="hrc-item-dealer-btn"
+                                        data-sku="<?php echo esc_attr($raw_sku !== '' ? $raw_sku : $sku); ?>"
+                                        <?php disabled(empty($dealer_urls)); ?>
+                                    >Visit Dealer</button>
+                                </div>
                             </li>
                         <?php endforeach; ?>
                     <?php else : ?>
@@ -978,12 +1010,8 @@ final class Holosun_RSR_Catalog_Plugin
                     <?php endif; ?>
                 </ul>
             </div>
-
-            <div class="hrc-actions">
-                <button type="button" class="hrc-dealer-btn" <?php disabled(empty($dealer_urls)); ?>>Visit Dealer</button>
-            </div>
             <?php if (empty($dealer_urls)) : ?>
-                <div class="hrc-actions-help">Add dealer URLs in Settings -> Holosun RSR Catalog to enable this button.</div>
+                <div class="hrc-actions-help">Add dealer search URLs in Settings -> Holosun RSR Catalog to enable Visit Dealer buttons.</div>
             <?php endif; ?>
         </section>
         <script>
@@ -994,10 +1022,57 @@ final class Holosun_RSR_Catalog_Plugin
                 }
                 var search = root.querySelector('.hrc-search');
                 var count = root.querySelector('.hrc-count');
-                var dealerButton = root.querySelector('.hrc-dealer-btn');
+                var dealerButtons = Array.prototype.slice.call(root.querySelectorAll('.hrc-item-dealer-btn'));
                 var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
                 var items = Array.prototype.slice.call(root.querySelectorAll('.hrc-item'));
                 var total = items.length;
+                var buildDealerUrl = function (template, sku) {
+                    if (typeof template !== 'string' || template.length === 0) {
+                        return '';
+                    }
+                    if (typeof sku !== 'string' || sku.length === 0) {
+                        return '';
+                    }
+
+                    var encodedSku = encodeURIComponent(sku);
+
+                    if (template.indexOf('{sku}') !== -1 || template.indexOf('{SKU}') !== -1) {
+                        return template.replace(/\{sku\}/ig, encodedSku);
+                    }
+
+                    if (/HS507COMP/i.test(template)) {
+                        return template.replace(/HS507COMP/ig, encodedSku);
+                    }
+
+                    try {
+                        var parsed = new URL(template, window.location.origin);
+                        var host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+                        var base = parsed.protocol + '//' + parsed.host;
+
+                        if (host === 'checkmatedefense.us') {
+                            return base + '/search.php?search_query=' + encodedSku + '&section=product';
+                        }
+                        if (host === 'fiddlersdefense.com') {
+                            return base + '/search/' + encodedSku;
+                        }
+                        if (host === 'graniteridgedefense.com') {
+                            return base + '/search?q=' + encodedSku + '&options%5Bprefix%5D=last';
+                        }
+                        if (host === 'deleonrxgunsandammo.com') {
+                            return base + '/product-search-results?search_text=' + encodedSku + '&product_department_id=603&from_form=true';
+                        }
+                        if (host === 'highmountainarmory.com') {
+                            return base + '/product-department/optics?q=' + encodedSku;
+                        }
+                        if (host === 'daycoammo.com') {
+                            return base + '/search?q=' + encodedSku;
+                        }
+                    } catch (err) {
+                        return '';
+                    }
+
+                    return '';
+                };
                 var apply = function () {
                     var query = '';
                     if (search && typeof search.value === 'string') {
@@ -1019,20 +1094,26 @@ final class Holosun_RSR_Catalog_Plugin
                 if (search) {
                     search.addEventListener('input', apply);
                 }
-                if (dealerButton) {
-                    dealerButton.addEventListener('click', function (event) {
+                if (dealerButtons.length > 0) {
+                    dealerButtons.forEach(function (dealerButton) {
+                        dealerButton.addEventListener('click', function (event) {
                         event.preventDefault();
                         if (!Array.isArray(dealerUrls) || dealerUrls.length === 0) {
                             return;
                         }
+                        var sku = (dealerButton.getAttribute('data-sku') || '').trim();
+                        if (!sku) {
+                            return;
+                        }
                         var randomIndex = Math.floor(Math.random() * dealerUrls.length);
-                        var url = dealerUrls[randomIndex];
+                        var url = buildDealerUrl(dealerUrls[randomIndex], sku);
                         if (typeof url === 'string' && url.length > 0) {
                             var opened = window.open(url, '_blank', 'noopener,noreferrer');
                             if (opened && typeof opened.opener !== 'undefined') {
                                 opened.opener = null;
                             }
                         }
+                    });
                     });
                 }
                 apply();
@@ -1097,29 +1178,6 @@ final class Holosun_RSR_Catalog_Plugin
                 border-radius: 10px;
                 background: #0d161f;
             }
-            .hrc-actions {
-                margin-top: 12px;
-            }
-            .hrc-dealer-btn {
-                width: 100%;
-                border: 0;
-                border-radius: 10px;
-                padding: 12px 14px;
-                background: #59c3ff;
-                color: #08121b;
-                font-weight: 700;
-                cursor: pointer;
-                transition: filter 0.2s ease;
-            }
-            .hrc-dealer-btn:hover {
-                filter: brightness(1.06);
-            }
-            .hrc-dealer-btn:disabled {
-                background: #2a3a4a;
-                color: #8ea1b6;
-                cursor: not-allowed;
-                filter: none;
-            }
             .hrc-actions-help {
                 margin-top: 8px;
                 color: #91a6bc;
@@ -1152,10 +1210,50 @@ final class Holosun_RSR_Catalog_Plugin
                 color: #8ca0b4;
                 word-break: break-word;
             }
-            .hrc-item-price {
-                color: #73d2ff;
+            .hrc-item-right {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                flex-wrap: nowrap;
+            }
+            .hrc-price-block {
+                min-width: 88px;
+                text-align: right;
+            }
+            .hrc-price-label {
+                color: #8ca0b4;
+                font-size: 0.68rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+            .hrc-price-value {
+                color: #e7edf3;
                 font-weight: 700;
+                line-height: 1.25;
                 white-space: nowrap;
+            }
+            .hrc-price-block-main .hrc-price-value {
+                color: #73d2ff;
+            }
+            .hrc-item-dealer-btn {
+                border: 0;
+                border-radius: 8px;
+                padding: 9px 12px;
+                background: #59c3ff;
+                color: #08121b;
+                font-weight: 700;
+                cursor: pointer;
+                white-space: nowrap;
+                transition: filter 0.2s ease;
+            }
+            .hrc-item-dealer-btn:hover {
+                filter: brightness(1.06);
+            }
+            .hrc-item-dealer-btn:disabled {
+                background: #2a3a4a;
+                color: #8ea1b6;
+                cursor: not-allowed;
+                filter: none;
             }
             .hrc-empty {
                 padding: 14px;
@@ -1166,8 +1264,17 @@ final class Holosun_RSR_Catalog_Plugin
                     flex-direction: column;
                     align-items: flex-start;
                 }
-                .hrc-item-price {
-                    margin-top: 6px;
+                .hrc-item-right {
+                    width: 100%;
+                    justify-content: space-between;
+                    flex-wrap: wrap;
+                }
+                .hrc-price-block {
+                    min-width: 74px;
+                    text-align: left;
+                }
+                .hrc-item-dealer-btn {
+                    width: 100%;
                 }
             }
         </style>
@@ -1191,6 +1298,7 @@ final class Holosun_RSR_Catalog_Plugin
             manufacturer_part_number VARCHAR(128) NULL,
             product_name VARCHAR(500) NOT NULL,
             distributor_price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            retail_map DECIMAL(12,2) NOT NULL DEFAULT 0.00,
             display_price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
             inventory_quantity INT NOT NULL DEFAULT 0,
             allocation_status VARCHAR(64) NULL,
