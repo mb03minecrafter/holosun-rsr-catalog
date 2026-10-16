@@ -601,6 +601,8 @@ final class Holosun_RSR_Catalog_Plugin
         );
         $products = self::get_catalog_for_render();
         $container_id = 'hrc-catalog-' . wp_rand(1000, 999999);
+        $grid_id = $container_id . '-grid';
+        $search_id = $container_id . '-search';
 
         ob_start();
         self::print_frontend_assets();
@@ -612,12 +614,23 @@ final class Holosun_RSR_Catalog_Plugin
                     <h2 id="<?php echo esc_attr($container_id); ?>-title">Shop Holosun Deals</h2>
                 </div>
                 <?php if (!empty($products)) : ?>
-                    <span class="hrc-product-count"><?php echo esc_html(number_format_i18n(count($products))); ?> products</span>
+                    <span class="hrc-product-count" aria-live="polite"><?php echo esc_html(number_format_i18n(count($products))); ?> products</span>
                 <?php endif; ?>
             </header>
 
             <?php if (!empty($products)) : ?>
-                <div class="hrc-product-grid">
+                <div class="hrc-search-wrap">
+                    <label class="screen-reader-text" for="<?php echo esc_attr($search_id); ?>">Search Holosun products</label>
+                    <input
+                        class="hrc-search"
+                        id="<?php echo esc_attr($search_id); ?>"
+                        type="search"
+                        placeholder="Search by product, model, or UPC"
+                        autocomplete="off"
+                        aria-controls="<?php echo esc_attr($grid_id); ?>"
+                    >
+                </div>
+                <div class="hrc-product-grid" id="<?php echo esc_attr($grid_id); ?>">
                     <?php foreach ($products as $product) : ?>
                         <?php
                         $title = isset($product['title']) ? (string) $product['title'] : '';
@@ -628,7 +641,10 @@ final class Holosun_RSR_Catalog_Plugin
                         $image_url = isset($product['image_url']) ? (string) $product['image_url'] : '';
                         $display_price = isset($product['display_price']) ? (float) $product['display_price'] : 0.0;
                         ?>
-                        <article class="hrc-product-card">
+                        <article
+                            class="hrc-product-card"
+                            data-search="<?php echo esc_attr(trim($title . ' ' . $part_number . ' ' . $upc)); ?>"
+                        >
                             <a
                                 class="hrc-product-link"
                                 href="<?php echo esc_url($permalink); ?>"
@@ -661,6 +677,7 @@ final class Holosun_RSR_Catalog_Plugin
                         </article>
                     <?php endforeach; ?>
                 </div>
+                <div class="hrc-no-results" hidden>No Holosun products match that search.</div>
             <?php else : ?>
                 <div class="hrc-empty-state">
                     Current Holosun deals are temporarily unavailable. Please check back shortly.
@@ -676,6 +693,33 @@ final class Holosun_RSR_Catalog_Plugin
 
                 var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
                 var links = root.querySelectorAll('.hrc-product-link');
+                var cards = root.querySelectorAll('.hrc-product-card');
+                var search = root.querySelector('.hrc-search');
+                var count = root.querySelector('.hrc-product-count');
+                var noResults = root.querySelector('.hrc-no-results');
+
+                if (search) {
+                    search.addEventListener('input', function () {
+                        var query = search.value.trim().toLowerCase();
+                        var visibleCount = 0;
+
+                        Array.prototype.forEach.call(cards, function (card) {
+                            var searchableText = (card.getAttribute('data-search') || '').toLowerCase();
+                            var matches = query === '' || searchableText.indexOf(query) !== -1;
+                            card.hidden = !matches;
+                            if (matches) {
+                                visibleCount += 1;
+                            }
+                        });
+
+                        if (count) {
+                            count.textContent = visibleCount + (visibleCount === 1 ? ' product' : ' products');
+                        }
+                        if (noResults) {
+                            noResults.hidden = visibleCount !== 0;
+                        }
+                    });
+                }
 
                 var normalizeSku = function (sku) {
                     if (typeof sku !== 'string') {
@@ -779,7 +823,7 @@ final class Holosun_RSR_Catalog_Plugin
             .hrc-catalog {
                 width: min(1440px, calc(100% - 32px));
                 margin: 28px auto 48px;
-                color: #111814;
+                color: var(--theme-text-color, #e7edf3);
             }
 
             .hrc-catalog-header {
@@ -789,12 +833,12 @@ final class Holosun_RSR_Catalog_Plugin
                 gap: 24px;
                 margin-bottom: 18px;
                 padding-bottom: 14px;
-                border-bottom: 3px solid #1f5b3a;
+                border-bottom: 3px solid var(--theme-link-initial-color, #59c3ff);
             }
 
             .hrc-eyebrow {
                 margin: 0 0 4px;
-                color: #1f5b3a;
+                color: var(--theme-link-initial-color, #59c3ff);
                 font-size: 0.78rem;
                 font-weight: 800;
                 letter-spacing: 0;
@@ -803,7 +847,7 @@ final class Holosun_RSR_Catalog_Plugin
 
             .hrc-catalog-header h2 {
                 margin: 0;
-                color: #111814;
+                color: var(--theme-headings-color, #ffffff);
                 font-size: 2.25rem;
                 line-height: 1.1;
                 letter-spacing: 0;
@@ -811,7 +855,7 @@ final class Holosun_RSR_Catalog_Plugin
 
             .hrc-product-count {
                 flex: 0 0 auto;
-                color: #59635d;
+                color: #91a6bc;
                 font-size: 0.9rem;
                 font-weight: 700;
             }
@@ -822,22 +866,50 @@ final class Holosun_RSR_Catalog_Plugin
                 gap: 12px;
             }
 
+            .hrc-search-wrap {
+                margin-bottom: 16px;
+            }
+
+            .hrc-search {
+                width: 100%;
+                height: 46px;
+                padding: 0 14px;
+                color: var(--theme-text-color, #e7edf3);
+                background: #111a24;
+                border: 1px solid var(--theme-border-color, #2a3340);
+                border-radius: 6px;
+                box-shadow: none;
+                font: inherit;
+                letter-spacing: 0;
+            }
+
+            .hrc-search::placeholder {
+                color: #7f93aa;
+                opacity: 1;
+            }
+
+            .hrc-search:focus {
+                border-color: var(--theme-link-initial-color, #59c3ff);
+                box-shadow: 0 0 0 2px rgba(89, 195, 255, 0.18);
+                outline: none;
+            }
+
             .hrc-product-card {
                 min-width: 0;
                 margin: 0;
                 overflow: hidden;
-                background: #ffffff;
-                border: 1px solid #dce2de;
+                background: #0e1319;
+                border: 1px solid var(--theme-border-color, #2a3340);
                 border-radius: 6px;
-                box-shadow: 0 3px 0 rgba(17, 24, 20, 0.04);
+                box-shadow: 0 3px 0 rgba(0, 0, 0, 0.16);
                 transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
             }
 
             .hrc-product-card:hover,
             .hrc-product-card:focus-within {
                 transform: translateY(-2px);
-                border-color: #9eb6a7;
-                box-shadow: 0 10px 20px rgba(17, 24, 20, 0.12);
+                border-color: var(--theme-link-initial-color, #59c3ff);
+                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.32);
             }
 
             .hrc-product-link {
@@ -849,7 +921,7 @@ final class Holosun_RSR_Catalog_Plugin
             }
 
             .hrc-product-link:focus-visible {
-                outline: 3px solid #1f5b3a;
+                outline: 3px solid var(--theme-link-initial-color, #59c3ff);
                 outline-offset: -3px;
             }
 
@@ -861,7 +933,7 @@ final class Holosun_RSR_Catalog_Plugin
                 justify-content: center;
                 padding: 18px;
                 background: #ffffff;
-                border-bottom: 1px solid #eef1ef;
+                border-bottom: 1px solid var(--theme-border-color, #2a3340);
             }
 
             .hrc-image-frame img {
@@ -883,7 +955,7 @@ final class Holosun_RSR_Catalog_Plugin
                 display: -webkit-box;
                 min-height: 4.15em;
                 overflow: hidden;
-                color: #111814;
+                color: var(--theme-headings-color, #ffffff);
                 font-size: 1rem;
                 font-weight: 750;
                 line-height: 1.38;
@@ -895,7 +967,7 @@ final class Holosun_RSR_Catalog_Plugin
             .hrc-product-model {
                 margin-top: 6px;
                 overflow: hidden;
-                color: #69736d;
+                color: #91a6bc;
                 font-size: 0.78rem;
                 font-weight: 650;
                 text-overflow: ellipsis;
@@ -917,14 +989,14 @@ final class Holosun_RSR_Catalog_Plugin
             }
 
             .hrc-price-label {
-                color: #69736d;
+                color: #91a6bc;
                 font-size: 0.68rem;
                 font-weight: 800;
                 text-transform: uppercase;
             }
 
             .hrc-price {
-                color: #1f5b3a;
+                color: var(--theme-link-initial-color, #59c3ff);
                 font-size: 1.35rem;
                 font-weight: 850;
                 line-height: 1.15;
@@ -933,8 +1005,8 @@ final class Holosun_RSR_Catalog_Plugin
             .hrc-view-deal {
                 flex: 0 0 auto;
                 padding: 8px 10px;
-                color: #ffffff;
-                background: #1f5b3a;
+                color: #08121b;
+                background: var(--theme-link-initial-color, #59c3ff);
                 border-radius: 5px;
                 font-size: 0.78rem;
                 font-weight: 800;
@@ -944,9 +1016,18 @@ final class Holosun_RSR_Catalog_Plugin
 
             .hrc-empty-state {
                 padding: 32px;
-                color: #4e5952;
-                background: #f5f7f5;
-                border: 1px solid #dce2de;
+                color: var(--theme-text-color, #e7edf3);
+                background: #0e1319;
+                border: 1px solid var(--theme-border-color, #2a3340);
+                border-radius: 6px;
+                text-align: center;
+            }
+
+            .hrc-no-results {
+                padding: 32px;
+                color: var(--theme-text-color, #e7edf3);
+                background: #0e1319;
+                border: 1px solid var(--theme-border-color, #2a3340);
                 border-radius: 6px;
                 text-align: center;
             }
