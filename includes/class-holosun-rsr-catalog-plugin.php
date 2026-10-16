@@ -875,7 +875,7 @@ final class Holosun_RSR_Catalog_Plugin
                 height: 46px;
                 padding: 0 14px;
                 color: var(--theme-text-color, #e7edf3);
-                background: #111a24;
+                background: #111a24 !important;
                 border: 1px solid var(--theme-border-color, #2a3340);
                 border-radius: 6px;
                 box-shadow: none;
