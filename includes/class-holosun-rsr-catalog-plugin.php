@@ -328,7 +328,14 @@ final class Holosun_RSR_Catalog_Plugin
             }
 
             $upc = isset($price_row['upc']) ? trim((string) $price_row['upc']) : '';
-            $price = isset($price_row['finalSalePrice']) ? (float) $price_row['finalSalePrice'] : 0.0;
+            $price = isset($price_row['deliveredPrice']) ? (float) $price_row['deliveredPrice'] : 0.0;
+            if ($price <= 0) {
+                $item_price = isset($price_row['finalSalePrice']) ? (float) $price_row['finalSalePrice'] : 0.0;
+                $customer_shipping = isset($price_row['customerShipping'])
+                    ? max(0.0, (float) $price_row['customerShipping'])
+                    : 0.0;
+                $price = $item_price > 0 ? $item_price + $customer_shipping : 0.0;
+            }
             if ($upc !== '' && $price > 0) {
                 $prices_by_upc[$upc] = $price;
             }
@@ -474,7 +481,16 @@ final class Holosun_RSR_Catalog_Plugin
         }
 
         $woo = $response['body']['wooCommerce'];
-        return isset($woo['itemPrice']) ? (float) $woo['itemPrice'] : 0.0;
+        $delivered_price = isset($woo['deliveredPrice']) ? (float) $woo['deliveredPrice'] : 0.0;
+        if ($delivered_price > 0) {
+            return $delivered_price;
+        }
+
+        $item_price = isset($woo['itemPrice']) ? (float) $woo['itemPrice'] : 0.0;
+        $customer_shipping = isset($woo['customerShipping'])
+            ? max(0.0, (float) $woo['customerShipping'])
+            : 0.0;
+        return $item_price > 0 ? $item_price + $customer_shipping : 0.0;
     }
 
     private static function api_get($path, $query = array())
