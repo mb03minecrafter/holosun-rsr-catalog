@@ -1,8 +1,8 @@
 <?php
 /**
- * Plugin Name: Holosun RSR Catalog
- * Description: Imports HOLOSUN products from the RSR FTP feed, saves them in a local table, and renders a searchable front-page list.
- * Version: 1.1.0
+ * Plugin Name: Holosun Phoenix Catalog
+ * Description: Renders current Holosun products and pricing from Phoenix as a responsive dealer-routing catalog.
+ * Version: 2.0.0
  * Author: HolosunDeals
  * License: GPL-2.0-or-later
  * Text Domain: holosun-rsr-catalog

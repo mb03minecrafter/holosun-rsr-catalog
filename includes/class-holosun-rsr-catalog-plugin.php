@@ -6,11 +6,10 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '1.1.0';
-    const DB_VERSION = '1.1.0';
+    const VERSION = '2.0.0';
 
     const OPTION_SETTINGS = 'hrc_settings';
-    const OPTION_DB_VERSION = 'hrc_db_version';
+    const OPTION_CATALOG_CACHE = 'hrc_phoenix_catalog_cache_v2';
     const OPTION_LAST_SYNC = 'hrc_last_sync';
     const OPTION_LAST_SYNC_STATUS = 'hrc_last_sync_status';
     const OPTION_LAST_SYNC_MESSAGE = 'hrc_last_sync_message';
@@ -18,16 +17,10 @@ final class Holosun_RSR_Catalog_Plugin
 
     const ADMIN_SLUG = 'holosun-rsr-catalog';
     const CRON_HOOK = 'hrc_sync_event';
+    const CRON_SCHEDULE = 'hrc_every_five_minutes';
     const SHORTCODE = 'holosun_rsr_list';
 
-    /**
-     * @var bool
-     */
     private static $booted = false;
-
-    /**
-     * @var bool
-     */
     private static $assets_printed = false;
 
     public static function boot()
@@ -41,7 +34,8 @@ final class Holosun_RSR_Catalog_Plugin
         register_activation_hook(HRC_PLUGIN_FILE, array(__CLASS__, 'activate'));
         register_deactivation_hook(HRC_PLUGIN_FILE, array(__CLASS__, 'deactivate'));
 
-        add_action('init', array(__CLASS__, 'maybe_upgrade_schema'));
+        add_filter('cron_schedules', array(__CLASS__, 'register_cron_schedule'));
+        add_action('init', array(__CLASS__, 'ensure_schedule'), 5);
         add_action('admin_menu', array(__CLASS__, 'register_admin_menu'));
         add_action('admin_init', array(__CLASS__, 'register_settings'));
         add_action('admin_post_hrc_sync_now', array(__CLASS__, 'handle_sync_now'));
@@ -53,38 +47,50 @@ final class Holosun_RSR_Catalog_Plugin
 
     public static function activate()
     {
-        self::create_tables();
-        update_option(self::OPTION_DB_VERSION, self::DB_VERSION);
-
-        if (!wp_next_scheduled(self::CRON_HOOK)) {
-            wp_schedule_event(time() + (5 * MINUTE_IN_SECONDS), 'hourly', self::CRON_HOOK);
-        }
+        self::schedule_refresh();
     }
 
     public static function deactivate()
     {
-        $next = wp_next_scheduled(self::CRON_HOOK);
-        if ($next) {
-            wp_unschedule_event($next, self::CRON_HOOK);
-        }
+        wp_clear_scheduled_hook(self::CRON_HOOK);
     }
 
-    public static function maybe_upgrade_schema()
+    public static function register_cron_schedule($schedules)
     {
-        $installed = get_option(self::OPTION_DB_VERSION, '');
-        if ((string) $installed === self::DB_VERSION) {
+        $schedules[self::CRON_SCHEDULE] = array(
+            'interval' => 5 * MINUTE_IN_SECONDS,
+            'display' => 'Every five minutes',
+        );
+
+        return $schedules;
+    }
+
+    public static function ensure_schedule()
+    {
+        $event = function_exists('wp_get_scheduled_event')
+            ? wp_get_scheduled_event(self::CRON_HOOK)
+            : null;
+
+        if ($event && isset($event->schedule) && $event->schedule === self::CRON_SCHEDULE) {
             return;
         }
 
-        self::create_tables();
-        update_option(self::OPTION_DB_VERSION, self::DB_VERSION);
+        wp_clear_scheduled_hook(self::CRON_HOOK);
+        self::schedule_refresh();
+    }
+
+    private static function schedule_refresh()
+    {
+        if (!wp_next_scheduled(self::CRON_HOOK)) {
+            wp_schedule_event(time() + MINUTE_IN_SECONDS, self::CRON_SCHEDULE, self::CRON_HOOK);
+        }
     }
 
     public static function register_admin_menu()
     {
         add_options_page(
-            'Holosun RSR Catalog',
-            'Holosun RSR Catalog',
+            'Holosun Phoenix Catalog',
+            'Holosun Phoenix Catalog',
             'manage_options',
             self::ADMIN_SLUG,
             array(__CLASS__, 'render_settings_page')
@@ -104,40 +110,22 @@ final class Holosun_RSR_Catalog_Plugin
     {
         $input = is_array($input) ? $input : array();
 
-        $host = isset($input['ftp_host']) ? trim((string) wp_unslash($input['ftp_host'])) : '';
-        $username = isset($input['ftp_username']) ? trim((string) wp_unslash($input['ftp_username'])) : '';
-        $password = isset($input['ftp_password']) ? trim((string) wp_unslash($input['ftp_password'])) : '';
-        $account_code = isset($input['account_code']) ? trim((string) wp_unslash($input['account_code'])) : '';
-        $port = isset($input['ftp_port']) ? absint($input['ftp_port']) : 2222;
-        $remote_path = isset($input['remote_path']) ? trim((string) wp_unslash($input['remote_path'])) : '/ftpdownloads/rsrinventory-new.zip';
-        $markup_percent = isset($input['markup_percent']) ? (float) $input['markup_percent'] : 10.0;
-        $dealer_urls_input = isset($input['dealer_urls']) ? (string) wp_unslash($input['dealer_urls']) : '';
-        $use_ssl = !empty($input['ftp_use_ssl']) ? '1' : '0';
+        $api_base_url = isset($input['phoenix_api_base_url'])
+            ? trim((string) wp_unslash($input['phoenix_api_base_url']))
+            : 'http://127.0.0.1:8080';
+        $dealer_urls_input = isset($input['dealer_urls'])
+            ? (string) wp_unslash($input['dealer_urls'])
+            : '';
 
-        if ($port <= 0 || $port > 65535) {
-            $port = 2222;
+        $api_base_url = esc_url_raw($api_base_url, array('http', 'https'));
+        if ($api_base_url === '') {
+            $api_base_url = 'http://127.0.0.1:8080';
         }
 
-        if ($remote_path === '') {
-            $remote_path = '/ftpdownloads/rsrinventory-new.zip';
-        }
-
-        if ($markup_percent < 0) {
-            $markup_percent = 0;
-        }
-        if ($markup_percent > 1000) {
-            $markup_percent = 1000;
-        }
+        delete_option(self::OPTION_CATALOG_CACHE);
 
         return array(
-            'ftp_host' => sanitize_text_field($host),
-            'ftp_username' => sanitize_text_field($username),
-            'ftp_password' => $password,
-            'account_code' => sanitize_text_field($account_code),
-            'ftp_port' => (string) $port,
-            'ftp_use_ssl' => $use_ssl,
-            'remote_path' => sanitize_text_field($remote_path),
-            'markup_percent' => (string) $markup_percent,
+            'phoenix_api_base_url' => untrailingslashit($api_base_url),
             'dealer_urls' => self::sanitize_dealer_urls_option($dealer_urls_input),
         );
     }
@@ -145,14 +133,7 @@ final class Holosun_RSR_Catalog_Plugin
     public static function get_settings()
     {
         $defaults = array(
-            'ftp_host' => '',
-            'ftp_username' => '',
-            'ftp_password' => '',
-            'account_code' => '',
-            'ftp_port' => '2222',
-            'ftp_use_ssl' => '1',
-            'remote_path' => '/ftpdownloads/rsrinventory-new.zip',
-            'markup_percent' => '10',
+            'phoenix_api_base_url' => 'http://127.0.0.1:8080',
             'dealer_urls' => '',
         );
 
@@ -178,8 +159,8 @@ final class Holosun_RSR_Catalog_Plugin
         $last_count = (int) get_option(self::OPTION_LAST_SYNC_COUNT, 0);
         ?>
         <div class="wrap">
-            <h1>Holosun RSR Catalog</h1>
-            <p>This plugin imports <strong>HOLOSUN-only</strong> products from your RSR FTP feed and applies a markup to distributor price.</p>
+            <h1>Holosun Phoenix Catalog</h1>
+            <p>The public catalog is built from current Phoenix product and pricing data. The cached catalog remains available if Phoenix is temporarily unreachable.</p>
             <p>Shortcode: <code>[<?php echo esc_html(self::SHORTCODE); ?>]</code></p>
 
             <?php if (!empty($notice)) : ?>
@@ -191,9 +172,9 @@ final class Holosun_RSR_Catalog_Plugin
             <?php if ($last_sync !== '') : ?>
                 <div class="notice notice-info">
                     <p>
-                        Last sync: <strong><?php echo esc_html($last_sync); ?></strong><br>
+                        Last refresh: <strong><?php echo esc_html($last_sync); ?></strong><br>
                         Status: <strong><?php echo esc_html($last_status !== '' ? $last_status : 'n/a'); ?></strong><br>
-                        Imported HOLOSUN rows: <strong><?php echo esc_html((string) $last_count); ?></strong><br>
+                        Published cards: <strong><?php echo esc_html((string) $last_count); ?></strong><br>
                         Message: <?php echo esc_html($last_message !== '' ? $last_message : 'n/a'); ?>
                     </p>
                 </div>
@@ -204,56 +185,23 @@ final class Holosun_RSR_Catalog_Plugin
                 <table class="form-table" role="presentation">
                     <tbody>
                     <tr>
-                        <th scope="row"><label for="hrc_ftp_host">FTP Host</label></th>
-                        <td><input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[ftp_host]" id="hrc_ftp_host" type="text" class="regular-text" value="<?php echo esc_attr($settings['ftp_host']); ?>" placeholder="ftps.rsrgroup.com"></td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_ftp_username">FTP Username</label></th>
-                        <td><input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[ftp_username]" id="hrc_ftp_username" type="text" class="regular-text" value="<?php echo esc_attr($settings['ftp_username']); ?>"></td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_ftp_password">FTP Password</label></th>
-                        <td><input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[ftp_password]" id="hrc_ftp_password" type="password" class="regular-text" value="<?php echo esc_attr($settings['ftp_password']); ?>"></td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_account_code">RSR Code</label></th>
+                        <th scope="row"><label for="hrc_phoenix_api_base_url">Phoenix API Base URL</label></th>
                         <td>
-                            <input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[account_code]" id="hrc_account_code" type="text" class="regular-text" value="<?php echo esc_attr($settings['account_code']); ?>">
-                            <p class="description">Optional reference field for your RSR account/dealer code.</p>
+                            <input
+                                name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[phoenix_api_base_url]"
+                                id="hrc_phoenix_api_base_url"
+                                type="url"
+                                class="regular-text code"
+                                value="<?php echo esc_attr($settings['phoenix_api_base_url']); ?>"
+                            >
+                            <p class="description">Use the private same-server address in production: <code>http://127.0.0.1:8080</code>.</p>
                         </td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="hrc_ftp_port">FTP Port</label></th>
-                        <td><input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[ftp_port]" id="hrc_ftp_port" type="number" min="1" max="65535" value="<?php echo esc_attr($settings['ftp_port']); ?>"></td>
-                    </tr>
-                    <tr>
-                        <th scope="row">Use FTPS (SSL)</th>
+                        <th scope="row"><label for="hrc_dealer_urls">Partner Dealer Search URLs</label></th>
                         <td>
-                            <label>
-                                <input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[ftp_use_ssl]" type="checkbox" value="1" <?php checked($settings['ftp_use_ssl'], '1'); ?>>
-                                Enable secure FTP (recommended)
-                            </label>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_remote_path">Remote Feed Path</label></th>
-                        <td>
-                            <input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[remote_path]" id="hrc_remote_path" type="text" class="regular-text" value="<?php echo esc_attr($settings['remote_path']); ?>">
-                            <p class="description">Default: <code>/ftpdownloads/rsrinventory-new.zip</code></p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_markup_percent">Markup Percent</label></th>
-                        <td>
-                            <input name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[markup_percent]" id="hrc_markup_percent" type="number" step="0.01" min="0" value="<?php echo esc_attr($settings['markup_percent']); ?>">
-                            <p class="description">Displayed price = distributor price * (1 + markup/100). Example: 10 = 10% markup.</p>
-                        </td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="hrc_dealer_urls">Dealer Search URLs</label></th>
-                        <td>
-                            <textarea name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[dealer_urls]" id="hrc_dealer_urls" rows="6" class="large-text code" placeholder="https://checkmatedefense.us/search.php?search_query={sku}&section=product&#10;https://fiddlersdefense.com/search/{sku}"><?php echo esc_textarea($settings['dealer_urls']); ?></textarea>
-                            <p class="description">One URL format per line. Use <code>{sku}</code> where the product SKU should go, or paste a sample URL that contains <code>HS507COMP</code>.</p>
+                            <textarea name="<?php echo esc_attr(self::OPTION_SETTINGS); ?>[dealer_urls]" id="hrc_dealer_urls" rows="8" class="large-text code" placeholder="https://example.com/search?q={sku}"><?php echo esc_textarea($settings['dealer_urls']); ?></textarea>
+                            <p class="description">One URL template per line. Use <code>{sku}</code> where the Holosun manufacturer part number belongs. Normal clicks route to Deerford Defense 80% of the time and a randomly selected partner 20% of the time.</p>
                         </td>
                     </tr>
                     </tbody>
@@ -263,12 +211,12 @@ final class Holosun_RSR_Catalog_Plugin
 
             <hr>
 
-            <h2>Sync</h2>
-            <p>Manual sync downloads the feed, filters to HOLOSUN rows, and updates the local database table.</p>
+            <h2>Catalog Refresh</h2>
+            <p>Phoenix refreshes automatically every five minutes. A manual refresh replaces the cache only after the complete catalog validates successfully.</p>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="hrc_sync_now">
                 <?php wp_nonce_field('hrc_sync_now'); ?>
-                <?php submit_button('Sync Now', 'primary', 'submit', false); ?>
+                <?php submit_button('Refresh Now', 'primary', 'submit', false); ?>
             </form>
         </div>
         <?php
@@ -282,8 +230,11 @@ final class Holosun_RSR_Catalog_Plugin
 
         check_admin_referer('hrc_sync_now');
 
-        $result = self::sync_from_ftp();
-        self::push_admin_notice(!empty($result['success']), isset($result['message']) ? (string) $result['message'] : 'Sync finished.');
+        $result = self::refresh_catalog();
+        self::push_admin_notice(
+            !empty($result['success']),
+            isset($result['message']) ? (string) $result['message'] : 'Catalog refresh finished.'
+        );
 
         wp_safe_redirect(admin_url('options-general.php?page=' . self::ADMIN_SLUG));
         exit;
@@ -291,35 +242,50 @@ final class Holosun_RSR_Catalog_Plugin
 
     public static function run_scheduled_sync()
     {
-        self::sync_from_ftp();
+        self::refresh_catalog();
     }
 
-    public static function sync_from_ftp()
+    public static function refresh_catalog()
     {
-        $settings = self::get_settings();
-        $host = trim((string) $settings['ftp_host']);
-        $username = trim((string) $settings['ftp_username']);
-        $password = (string) $settings['ftp_password'];
+        $result = self::fetch_phoenix_catalog();
+        $existing = self::read_catalog_cache();
 
-        if ($host === '' || $username === '' || $password === '') {
-            return self::finalize_sync(false, 0, 'Missing FTP settings. Please set host, username, and password.');
+        if (empty($result['success'])) {
+            $existing_count = isset($existing['products']) && is_array($existing['products'])
+                ? count($existing['products'])
+                : 0;
+
+            return self::finalize_refresh(
+                false,
+                $existing_count,
+                isset($result['message']) ? (string) $result['message'] : 'Phoenix catalog refresh failed.'
+            );
         }
 
-        $download = self::download_feed_file($settings);
-        if (empty($download['success'])) {
-            return self::finalize_sync(false, 0, isset($download['message']) ? $download['message'] : 'Feed download failed.');
+        $products = isset($result['products']) && is_array($result['products'])
+            ? $result['products']
+            : array();
+
+        if (empty($products)) {
+            return self::finalize_refresh(false, 0, 'Phoenix returned no eligible Holosun products; the prior cache was preserved.');
         }
 
-        $txt_path = isset($download['txt_path']) ? (string) $download['txt_path'] : '';
-        if ($txt_path === '' || !file_exists($txt_path)) {
-            return self::finalize_sync(false, 0, 'Feed file was downloaded but no text file was found.');
-        }
+        $cache = array(
+            'version' => self::VERSION,
+            'updated_at' => time(),
+            'products' => $products,
+        );
 
-        $import = self::import_holosun_rows_from_file($txt_path, $settings);
-        return self::finalize_sync(!empty($import['success']), (int) $import['count'], (string) $import['message']);
+        update_option(self::OPTION_CATALOG_CACHE, $cache, false);
+
+        return self::finalize_refresh(
+            true,
+            count($products),
+            sprintf('Loaded %d published, in-stock Holosun products from Phoenix.', count($products))
+        );
     }
 
-    private static function finalize_sync($success, $count, $message)
+    private static function finalize_refresh($success, $count, $message)
     {
         update_option(self::OPTION_LAST_SYNC, current_time('mysql'));
         update_option(self::OPTION_LAST_SYNC_STATUS, $success ? 'success' : 'error');
@@ -333,601 +299,288 @@ final class Holosun_RSR_Catalog_Plugin
         );
     }
 
-    private static function download_feed_file($settings)
+    private static function fetch_phoenix_catalog()
     {
-        if (!function_exists('ftp_connect')) {
-            return array(
-                'success' => false,
-                'message' => 'PHP FTP extension is not available on this server.',
-            );
+        $product_result = self::fetch_all_pages(
+            '/api/v1/product-management/products',
+            array('search' => 'Holosun')
+        );
+        if (empty($product_result['success'])) {
+            return $product_result;
         }
 
-        $host = trim((string) $settings['ftp_host']);
-        $username = trim((string) $settings['ftp_username']);
-        $password = (string) $settings['ftp_password'];
-        $port = isset($settings['ftp_port']) ? absint($settings['ftp_port']) : 2222;
-        $use_ssl = !empty($settings['ftp_use_ssl']);
-        $remote_path = trim((string) $settings['remote_path']);
-
-        if ($port <= 0 || $port > 65535) {
-            $port = 2222;
+        $price_result = self::fetch_all_pages(
+            '/api/v1/gunbroker/bulk-listings/candidates',
+            array(
+                'environment' => 'production',
+                'search' => 'Holosun',
+                'eligibleOnly' => 'false',
+            )
+        );
+        if (empty($price_result['success'])) {
+            return $price_result;
         }
 
-        if ($remote_path === '') {
-            $remote_path = '/ftpdownloads/rsrinventory-new.zip';
-        }
-
-        $conn = null;
-        if ($use_ssl && function_exists('ftp_ssl_connect')) {
-            $conn = @ftp_ssl_connect($host, $port, 30);
-        }
-        if (!$conn) {
-            $conn = @ftp_connect($host, $port, 30);
-        }
-
-        if (!$conn) {
-            return array(
-                'success' => false,
-                'message' => 'Could not connect to FTP host.',
-            );
-        }
-
-        $logged_in = @ftp_login($conn, $username, $password);
-        if (!$logged_in) {
-            @ftp_close($conn);
-            return array(
-                'success' => false,
-                'message' => 'FTP login failed. Please verify username/password.',
-            );
-        }
-
-        @ftp_pasv($conn, true);
-
-        $uploads = wp_upload_dir();
-        $base_dir = trailingslashit($uploads['basedir']) . 'holosun-rsr-catalog';
-        if (!wp_mkdir_p($base_dir)) {
-            @ftp_close($conn);
-            return array(
-                'success' => false,
-                'message' => 'Could not create uploads directory for feed files.',
-            );
-        }
-
-        $remote_name = basename($remote_path);
-        if ($remote_name === '' || $remote_name === '.' || $remote_name === DIRECTORY_SEPARATOR) {
-            $remote_name = 'rsrinventory-new.zip';
-        }
-
-        $local_file = trailingslashit($base_dir) . $remote_name;
-        $tmp_file = $local_file . '.tmp';
-        @unlink($tmp_file);
-
-        $downloaded = @ftp_get($conn, $tmp_file, $remote_path, FTP_BINARY);
-        @ftp_close($conn);
-
-        if (!$downloaded) {
-            @unlink($tmp_file);
-            return array(
-                'success' => false,
-                'message' => 'FTP download failed. Check remote path and FTP permissions.',
-            );
-        }
-
-        if (!@rename($tmp_file, $local_file)) {
-            @unlink($tmp_file);
-            return array(
-                'success' => false,
-                'message' => 'Downloaded file could not be finalized on disk.',
-            );
-        }
-
-        $lower = strtolower($local_file);
-        if (self::string_ends_with($lower, '.zip')) {
-            $extract = self::extract_zip_file($local_file, $base_dir);
-            if (empty($extract['success'])) {
-                return $extract;
+        $prices_by_upc = array();
+        foreach ($price_result['items'] as $price_row) {
+            if (!is_array($price_row)) {
+                continue;
             }
 
-            return array(
-                'success' => true,
-                'txt_path' => isset($extract['txt_path']) ? (string) $extract['txt_path'] : '',
-                'message' => 'Feed ZIP downloaded and extracted.',
+            $upc = isset($price_row['upc']) ? trim((string) $price_row['upc']) : '';
+            $price = isset($price_row['finalSalePrice']) ? (float) $price_row['finalSalePrice'] : 0.0;
+            if ($upc !== '' && $price > 0) {
+                $prices_by_upc[$upc] = $price;
+            }
+        }
+
+        $products = array();
+        foreach ($product_result['items'] as $row) {
+            if (!is_array($row)) {
+                continue;
+            }
+
+            $brand = isset($row['brand']) ? trim((string) $row['brand']) : '';
+            if (strcasecmp($brand, 'Holosun') !== 0) {
+                continue;
+            }
+
+            $status = isset($row['wooProductStatus']) ? strtolower(trim((string) $row['wooProductStatus'])) : '';
+            $quantity = isset($row['selectedQuantityAvailable']) ? (int) $row['selectedQuantityAvailable'] : 0;
+            $woo_product_id = isset($row['wooProductId']) ? (int) $row['wooProductId'] : 0;
+            $upc = isset($row['upc']) ? trim((string) $row['upc']) : '';
+            $title = isset($row['productName']) ? self::clean_text($row['productName']) : '';
+            $permalink = isset($row['wooProductPermalink']) ? esc_url_raw((string) $row['wooProductPermalink']) : '';
+            $image_url = isset($row['firstImageUrl']) ? esc_url_raw((string) $row['firstImageUrl']) : '';
+            $part_number = isset($row['manufacturerPartNumber'])
+                ? self::clean_text($row['manufacturerPartNumber'])
+                : '';
+
+            if (
+                $status !== 'publish'
+                || $quantity <= 0
+                || $woo_product_id <= 0
+                || $upc === ''
+                || $title === ''
+                || $permalink === ''
+                || $image_url === ''
+            ) {
+                continue;
+            }
+
+            $real_price = isset($prices_by_upc[$upc]) ? (float) $prices_by_upc[$upc] : 0.0;
+            if ($real_price <= 0) {
+                $real_price = self::fetch_single_real_price($upc);
+            }
+            if ($real_price <= 0) {
+                continue;
+            }
+
+            $uplift_basis_points = self::stable_uplift_basis_points($upc);
+            $display_price = round($real_price * (1 + ($uplift_basis_points / 10000)), 2);
+
+            $products[] = array(
+                'upc' => $upc,
+                'title' => $title,
+                'part_number' => $part_number,
+                'permalink' => $permalink,
+                'image_url' => $image_url,
+                'display_price' => $display_price,
             );
         }
+
+        usort($products, function ($left, $right) {
+            return strcasecmp((string) $left['title'], (string) $right['title']);
+        });
 
         return array(
             'success' => true,
-            'txt_path' => $local_file,
-            'message' => 'Feed text file downloaded.',
+            'products' => $products,
         );
     }
 
-    private static function extract_zip_file($zip_path, $extract_dir)
+    private static function fetch_all_pages($path, $query)
     {
-        if (!class_exists('ZipArchive')) {
-            return array(
-                'success' => false,
-                'message' => 'ZipArchive is not available on this server.',
-            );
-        }
+        $all_items = array();
+        $page = 1;
+        $page_size = 250;
+        $max_pages = 25;
 
-        $zip = new ZipArchive();
-        $opened = $zip->open($zip_path);
-        if ($opened !== true) {
-            return array(
-                'success' => false,
-                'message' => 'Could not open downloaded ZIP file.',
+        while ($page <= $max_pages) {
+            $page_query = array_merge(
+                $query,
+                array(
+                    'page' => $page,
+                    'pageSize' => $page_size,
+                )
             );
-        }
+            $response = self::api_get($path, $page_query);
+            if (empty($response['success'])) {
+                return $response;
+            }
 
-        $txt_entry = '';
-        $file_count = (int) $zip->numFiles;
-        for ($i = 0; $i < $file_count; $i++) {
-            $entry_name = (string) $zip->getNameIndex($i);
-            if (self::string_ends_with(strtolower($entry_name), '.txt')) {
-                $txt_entry = $entry_name;
+            $body = isset($response['body']) && is_array($response['body'])
+                ? $response['body']
+                : array();
+            $items = isset($body['items']) && is_array($body['items'])
+                ? $body['items']
+                : null;
+
+            if ($items === null) {
+                return array(
+                    'success' => false,
+                    'message' => 'Phoenix returned an invalid paginated response for ' . $path . '.',
+                );
+            }
+
+            $all_items = array_merge($all_items, $items);
+            $total_pages = isset($body['totalPages']) ? (int) $body['totalPages'] : 0;
+            $total_items = isset($body['total'])
+                ? (int) $body['total']
+                : (isset($body['totalCount']) ? (int) $body['totalCount'] : 0);
+
+            if ($total_pages > 0 && $page >= $total_pages) {
                 break;
             }
+            if ($total_items > 0 && count($all_items) >= $total_items) {
+                break;
+            }
+            if (count($items) < $page_size) {
+                break;
+            }
+
+            $page++;
         }
 
-        if ($txt_entry === '') {
-            $zip->close();
+        if ($page > $max_pages) {
             return array(
                 'success' => false,
-                'message' => 'ZIP file did not contain a .txt feed file.',
-            );
-        }
-
-        if (!$zip->extractTo($extract_dir, array($txt_entry))) {
-            $zip->close();
-            return array(
-                'success' => false,
-                'message' => 'ZIP extraction failed.',
-            );
-        }
-        $zip->close();
-
-        $candidate = trailingslashit($extract_dir) . ltrim($txt_entry, '/\\');
-        if (!file_exists($candidate)) {
-            $candidate = trailingslashit($extract_dir) . basename($txt_entry);
-        }
-
-        if (!file_exists($candidate)) {
-            return array(
-                'success' => false,
-                'message' => 'Extracted feed text file could not be located.',
+                'message' => 'Phoenix pagination exceeded the catalog safety limit for ' . $path . '.',
             );
         }
 
         return array(
             'success' => true,
-            'txt_path' => $candidate,
+            'items' => $all_items,
         );
     }
 
-    private static function import_holosun_rows_from_file($txt_path, $settings)
+    private static function fetch_single_real_price($upc)
     {
-        global $wpdb;
-
-        $table = self::get_table_name();
-        self::create_tables();
-
-        $markup_percent = isset($settings['markup_percent']) ? (float) $settings['markup_percent'] : 10.0;
-        if ($markup_percent < 0) {
-            $markup_percent = 0;
-        }
-        $multiplier = 1 + ($markup_percent / 100);
-
-        $sync_token = wp_generate_password(20, false, false);
-        $now = current_time('mysql', true);
-
-        $handle = @fopen($txt_path, 'rb');
-        if (!$handle) {
-            return array(
-                'success' => false,
-                'count' => 0,
-                'message' => 'Could not read downloaded feed file.',
-            );
-        }
-
-        $line_number = 0;
-        $holosun_rows = 0;
-        $upserted_rows = 0;
-        $invalid_rows = 0;
-
-        while (($line = fgets($handle)) !== false) {
-            $line_number++;
-            $parsed = self::parse_feed_line($line, $line_number);
-
-            if ($parsed === null) {
-                $invalid_rows++;
-                continue;
-            }
-
-            if (!self::is_holosun_manufacturer($parsed['manufacturer'])) {
-                continue;
-            }
-
-            $holosun_rows++;
-
-            $distributor_price = (float) $parsed['distributor_price'];
-            $display_price = round($distributor_price * $multiplier, 2);
-            $retail_map = (float) $parsed['retail_map'];
-
-            $replace_result = $wpdb->replace(
-                $table,
-                array(
-                    'rsr_sku' => $parsed['rsr_sku'],
-                    'upc' => $parsed['upc'],
-                    'manufacturer' => $parsed['manufacturer'],
-                    'manufacturer_part_number' => $parsed['manufacturer_part_number'],
-                    'product_name' => $parsed['product_name'],
-                    'distributor_price' => $distributor_price,
-                    'retail_map' => $retail_map,
-                    'display_price' => $display_price,
-                    'inventory_quantity' => $parsed['inventory_quantity'],
-                    'allocation_status' => $parsed['allocation_status'],
-                    'sync_token' => $sync_token,
-                    'last_seen_at' => $now,
-                    'updated_at' => $now,
-                ),
-                array(
-                    '%s', // rsr_sku
-                    '%s', // upc
-                    '%s', // manufacturer
-                    '%s', // manufacturer_part_number
-                    '%s', // product_name
-                    '%f', // distributor_price
-                    '%f', // retail_map
-                    '%f', // display_price
-                    '%d', // inventory_quantity
-                    '%s', // allocation_status
-                    '%s', // sync_token
-                    '%s', // last_seen_at
-                    '%s', // updated_at
-                )
-            );
-
-            if ($replace_result !== false) {
-                $upserted_rows++;
-            }
-        }
-
-        fclose($handle);
-
-        if ($holosun_rows > 0) {
-            $wpdb->query(
-                $wpdb->prepare(
-                    "DELETE FROM {$table} WHERE sync_token <> %s",
-                    $sync_token
-                )
-            );
-        }
-
-        if ($upserted_rows <= 0) {
-            return array(
-                'success' => false,
-                'count' => 0,
-                'message' => 'Sync completed but no HOLOSUN rows were imported. Check feed data and brand filter.',
-            );
-        }
-
-        return array(
-            'success' => true,
-            'count' => (int) $upserted_rows,
-            'message' => sprintf(
-                'Imported %d HOLOSUN rows (parsed: %d, skipped/invalid lines: %d).',
-                (int) $upserted_rows,
-                (int) $holosun_rows,
-                (int) $invalid_rows
-            ),
-        );
-    }
-
-    private static function parse_feed_line($line, $line_number)
-    {
-        $line = trim((string) $line);
-        if ($line === '') {
-            return null;
-        }
-
-        $columns = explode(';', $line);
-        if (!isset($columns[0])) {
-            return null;
-        }
-
-        $first = trim((string) $columns[0]);
-        if (
-            (int) $line_number === 1 &&
-            (stripos($first, 'RSR Stock') === 0 || stripos($first, 'RSR#') === 0)
-        ) {
-            return null;
-        }
-
-        if (count($columns) < 12) {
-            return null;
-        }
-
-        $rsr_sku = trim((string) $columns[0]);
-        if ($rsr_sku === '') {
-            return null;
-        }
-
-        $product_name = isset($columns[2]) ? trim((string) $columns[2]) : '';
-        if ($product_name === '') {
-            $product_name = $rsr_sku;
-        }
-        $product_name = self::normalize_catalog_text($product_name);
-
-        $manufacturer = isset($columns[10]) ? trim((string) $columns[10]) : '';
-        $manufacturer = self::normalize_catalog_text($manufacturer);
-
-        return array(
-            'rsr_sku' => $rsr_sku,
-            'upc' => isset($columns[1]) ? trim((string) $columns[1]) : '',
-            'product_name' => $product_name,
-            'manufacturer' => $manufacturer,
-            'manufacturer_part_number' => isset($columns[11]) ? trim((string) $columns[11]) : '',
-            'distributor_price' => self::parse_decimal(isset($columns[6]) ? $columns[6] : ''),
-            'retail_map' => self::parse_decimal(isset($columns[70]) ? $columns[70] : ''),
-            'inventory_quantity' => self::parse_int_value(isset($columns[8]) ? $columns[8] : ''),
-            'allocation_status' => isset($columns[12]) ? trim((string) $columns[12]) : '',
-        );
-    }
-
-    private static function is_holosun_manufacturer($manufacturer)
-    {
-        $manufacturer = strtoupper((string) $manufacturer);
-        $normalized = preg_replace('/[^A-Z0-9]/', '', $manufacturer);
-        if (!is_string($normalized)) {
-            return false;
-        }
-
-        return strpos($normalized, 'HOLOSUN') !== false;
-    }
-
-    private static function normalize_catalog_text($value)
-    {
-        $value = trim((string) $value);
-        if ($value === '') {
-            return '';
-        }
-
-        $value = preg_replace('/\s+/', ' ', $value);
-        if (!is_string($value)) {
-            return '';
-        }
-
-        // Normalize common abbreviated brand spellings to the preferred casing.
-        $value = preg_replace('/\bH[\s\-]?SUN\b/i', 'Holosun', $value);
-        if (!is_string($value)) {
-            return '';
-        }
-
-        $tokens = preg_split('/(\s+)/', $value, -1, PREG_SPLIT_DELIM_CAPTURE);
-        if (!is_array($tokens)) {
-            return trim($value);
-        }
-
-        foreach ($tokens as $idx => $token) {
-            if (trim($token) === '') {
-                continue;
-            }
-
-            $tokens[$idx] = self::normalize_catalog_token($token);
-        }
-
-        $normalized = trim(implode('', $tokens));
-        $normalized = preg_replace('/\bH[\s\-]?Sun\b/i', 'Holosun', $normalized);
-        if (!is_string($normalized)) {
-            return trim($value);
-        }
-
-        return trim($normalized);
-    }
-
-    private static function normalize_catalog_token($token)
-    {
-        $token = (string) $token;
-
-        if (!preg_match('/^([^A-Za-z0-9]*)([A-Za-z0-9\/\-]+)([^A-Za-z0-9]*)$/', $token, $matches)) {
-            return $token;
-        }
-
-        $prefix = isset($matches[1]) ? (string) $matches[1] : '';
-        $core = isset($matches[2]) ? (string) $matches[2] : '';
-        $suffix = isset($matches[3]) ? (string) $matches[3] : '';
-
-        if ($core === '') {
-            return $token;
-        }
-
-        $parts = preg_split('/([\-\/])/', $core, -1, PREG_SPLIT_DELIM_CAPTURE);
-        if (!is_array($parts)) {
-            return $token;
-        }
-
-        foreach ($parts as $idx => $part) {
-            if ($part === '-' || $part === '/') {
-                continue;
-            }
-            $parts[$idx] = self::normalize_catalog_fragment($part);
-        }
-
-        return $prefix . implode('', $parts) . $suffix;
-    }
-
-    private static function normalize_catalog_fragment($fragment)
-    {
-        $fragment = trim((string) $fragment);
-        if ($fragment === '') {
-            return '';
-        }
-
-        $upper = strtoupper($fragment);
-
-        // Terms that must stay all-caps.
-        $always_upper = array('IRIS', 'EPS', 'EVO', 'ARO', 'MRS', 'DRS', 'DPS', 'TH', 'AEMS', 'SCS', 'IR');
-        if (in_array($upper, $always_upper, true)) {
-            return $upper;
-        }
-
-        // Color abbreviations should be expanded to words.
-        $color_map = array(
-            'RD' => 'Red',
-            'GD' => 'Gold',
-            'GR' => 'Green',
-        );
-        if (isset($color_map[$upper])) {
-            return $color_map[$upper];
-        }
-
-        if ($upper === 'HOLOSUN') {
-            return 'Holosun';
-        }
-
-        // Keep mixed alphanumeric model codes in uppercase (e.g., HS510C, 2MOA).
-        if (preg_match('/[0-9]/', $upper) === 1) {
-            return $upper;
-        }
-
-        if (preg_match('/^[A-Z]+$/', $upper) === 1) {
-            return ucfirst(strtolower($upper));
-        }
-
-        if (preg_match('/^[a-z]+$/', $fragment) === 1) {
-            return ucfirst($fragment);
-        }
-
-        return ucfirst(strtolower($fragment));
-    }
-
-    private static function format_display_sku($sku)
-    {
-        $sku = trim((string) $sku);
-        if ($sku === '') {
-            return '';
-        }
-
-        // Strip leading H/S prefix variants (HS, H-S, H_S, H S) for display and dealer redirects.
-        $formatted = preg_replace('/^H[\s\-_]*S[\s\-_]*/i', '', $sku);
-        if (!is_string($formatted)) {
-            return $sku;
-        }
-
-        $formatted = trim($formatted);
-        return $formatted !== '' ? $formatted : $sku;
-    }
-
-    private static function sanitize_dealer_urls_option($raw)
-    {
-        $raw = (string) $raw;
-        if ($raw === '') {
-            return '';
-        }
-
-        $lines = preg_split('/\r\n|\r|\n/', $raw);
-        if (!is_array($lines)) {
-            return '';
-        }
-
-        $valid_urls = array();
-        foreach ($lines as $line) {
-            $url = trim((string) $line);
-            if ($url === '') {
-                continue;
-            }
-
-            if (!preg_match('#^https?://#i', $url)) {
-                $url = 'https://' . $url;
-            }
-
-            // Allow "{sku}" placeholders by swapping a sample token for validation.
-            $url_for_validation = preg_replace('/\{sku\}/i', 'HS507COMP', $url);
-            if (!is_string($url_for_validation)) {
-                continue;
-            }
-
-            $validated = esc_url_raw($url_for_validation);
-            if ($validated === '') {
-                continue;
-            }
-
-            if (function_exists('wp_http_validate_url') && !wp_http_validate_url($validated)) {
-                continue;
-            }
-
-            $url = preg_replace('/\{sku\}/i', '{sku}', $url);
-            if (!is_string($url)) {
-                continue;
-            }
-
-            $valid_urls[$url] = true;
-        }
-
-        if (empty($valid_urls)) {
-            return '';
-        }
-
-        return implode("\n", array_keys($valid_urls));
-    }
-
-    private static function get_dealer_urls_from_option($raw)
-    {
-        $sanitized = self::sanitize_dealer_urls_option($raw);
-        if ($sanitized === '') {
-            return array();
-        }
-
-        $lines = preg_split('/\r\n|\r|\n/', $sanitized);
-        if (!is_array($lines)) {
-            return array();
-        }
-
-        $urls = array();
-        foreach ($lines as $line) {
-            $url = trim((string) $line);
-            if ($url !== '') {
-                $urls[] = $url;
-            }
-        }
-
-        return $urls;
-    }
-
-    private static function parse_decimal($value)
-    {
-        $value = (string) $value;
-        $normalized = preg_replace('/[^0-9\.\-]/', '', $value);
-        if (!is_string($normalized) || $normalized === '' || $normalized === '.' || $normalized === '-') {
+        $path = '/api/v1/gunbroker-pricing/products/' . rawurlencode((string) $upc);
+        $response = self::api_get($path, array('environment' => 'production'));
+        if (empty($response['success']) || empty($response['body']['wooCommerce'])) {
             return 0.0;
         }
 
-        return (float) $normalized;
+        $woo = $response['body']['wooCommerce'];
+        return isset($woo['itemPrice']) ? (float) $woo['itemPrice'] : 0.0;
     }
 
-    private static function parse_int_value($value)
+    private static function api_get($path, $query = array())
     {
-        $value = (string) $value;
-        $normalized = preg_replace('/[^0-9\-]/', '', $value);
-        if (!is_string($normalized) || $normalized === '' || $normalized === '-') {
-            return 0;
+        $settings = self::get_settings();
+        $base_url = isset($settings['phoenix_api_base_url'])
+            ? untrailingslashit((string) $settings['phoenix_api_base_url'])
+            : 'http://127.0.0.1:8080';
+        $url = $base_url . '/' . ltrim((string) $path, '/');
+
+        if (!empty($query)) {
+            $url = add_query_arg($query, $url);
         }
 
-        return (int) $normalized;
+        $response = wp_remote_get(
+            $url,
+            array(
+                'timeout' => 45,
+                'redirection' => 0,
+                'headers' => array(
+                    'Accept' => 'application/json',
+                    'User-Agent' => 'HolosunDealsCatalog/' . self::VERSION,
+                ),
+            )
+        );
+
+        if (is_wp_error($response)) {
+            return array(
+                'success' => false,
+                'message' => 'Phoenix request failed: ' . $response->get_error_message(),
+            );
+        }
+
+        $status = (int) wp_remote_retrieve_response_code($response);
+        if ($status < 200 || $status >= 300) {
+            return array(
+                'success' => false,
+                'message' => sprintf('Phoenix request failed with HTTP %d for %s.', $status, $path),
+            );
+        }
+
+        $decoded = json_decode((string) wp_remote_retrieve_body($response), true);
+        if (!is_array($decoded)) {
+            return array(
+                'success' => false,
+                'message' => 'Phoenix returned invalid JSON for ' . $path . '.',
+            );
+        }
+
+        return array(
+            'success' => true,
+            'body' => $decoded,
+        );
+    }
+
+    private static function stable_uplift_basis_points($upc)
+    {
+        $hash = hash('sha256', 'holosundeals|' . (string) $upc);
+        $seed = hexdec(substr($hash, 0, 7));
+
+        return 100 + ($seed % 201);
+    }
+
+    private static function clean_text($value)
+    {
+        $value = wp_strip_all_tags((string) $value, true);
+        $value = preg_replace('/\s+/', ' ', $value);
+
+        return is_string($value) ? trim($value) : '';
+    }
+
+    private static function read_catalog_cache()
+    {
+        $cache = get_option(self::OPTION_CATALOG_CACHE, array());
+        if (!is_array($cache)) {
+            return array();
+        }
+
+        return $cache;
+    }
+
+    private static function get_catalog_for_render()
+    {
+        $cache = self::read_catalog_cache();
+        $products = isset($cache['products']) && is_array($cache['products'])
+            ? $cache['products']
+            : array();
+
+        if (!empty($products)) {
+            return $products;
+        }
+
+        $result = self::refresh_catalog();
+        if (empty($result['success'])) {
+            return array();
+        }
+
+        $cache = self::read_catalog_cache();
+        return isset($cache['products']) && is_array($cache['products'])
+            ? $cache['products']
+            : array();
     }
 
     public static function append_front_page_list($content)
     {
-        if (is_admin()) {
-            return $content;
-        }
-
-        if (!is_main_query() || !in_the_loop()) {
-            return $content;
-        }
-
-        if (!is_front_page()) {
+        if (is_admin() || !is_main_query() || !in_the_loop() || !is_front_page()) {
             return $content;
         }
 
@@ -940,79 +593,78 @@ final class Holosun_RSR_Catalog_Plugin
 
     public static function render_products_shortcode($atts = array())
     {
-        global $wpdb;
+        unset($atts);
 
         $settings = self::get_settings();
-        $dealer_urls = self::get_dealer_urls_from_option(isset($settings['dealer_urls']) ? $settings['dealer_urls'] : '');
-
-        $table = self::get_table_name();
-        $rows = $wpdb->get_results(
-            "SELECT rsr_sku, product_name, display_price, retail_map
-             FROM {$table}
-             ORDER BY display_price DESC, product_name ASC"
+        $dealer_urls = self::get_dealer_urls_from_option(
+            isset($settings['dealer_urls']) ? $settings['dealer_urls'] : ''
         );
-
-        $container_id = 'hrc-list-' . wp_rand(1000, 999999);
+        $products = self::get_catalog_for_render();
+        $container_id = 'hrc-catalog-' . wp_rand(1000, 999999);
 
         ob_start();
         self::print_frontend_assets();
         ?>
-        <section class="hrc-catalog-wrap" id="<?php echo esc_attr($container_id); ?>">
-            <div class="hrc-head">
-                <h2>Holosun Product Lookup</h2>
-            </div>
+        <section class="hrc-catalog" id="<?php echo esc_attr($container_id); ?>" aria-labelledby="<?php echo esc_attr($container_id); ?>-title">
+            <header class="hrc-catalog-header">
+                <div>
+                    <p class="hrc-eyebrow">Updated Holosun pricing</p>
+                    <h2 id="<?php echo esc_attr($container_id); ?>-title">Shop Holosun Deals</h2>
+                </div>
+                <?php if (!empty($products)) : ?>
+                    <span class="hrc-product-count"><?php echo esc_html(number_format_i18n(count($products))); ?> products</span>
+                <?php endif; ?>
+            </header>
 
-            <div class="hrc-search-row">
-                <input type="search" class="hrc-search" placeholder="Search by name or SKU">
-                <span class="hrc-count"></span>
-            </div>
-
-            <div class="hrc-scroll">
-                <ul class="hrc-list">
-                    <?php if (!empty($rows)) : ?>
-                        <?php foreach ($rows as $row) : ?>
-                            <?php
-                            $name = isset($row->product_name) ? (string) $row->product_name : '';
-                            $name = self::normalize_catalog_text($name);
-                            $raw_sku = isset($row->rsr_sku) ? (string) $row->rsr_sku : '';
-                            $sku = self::format_display_sku($raw_sku);
-                            $display_price = isset($row->display_price) ? (float) $row->display_price : 0;
-                            $retail_map = isset($row->retail_map) ? (float) $row->retail_map : 0;
-                            $map_text = $retail_map > 0 ? '$' . number_format($retail_map, 2) : 'N/A';
-                            $search_blob = strtolower(trim($name . ' ' . $sku . ' ' . $raw_sku));
-                            ?>
-                            <li class="hrc-item" data-search="<?php echo esc_attr($search_blob); ?>">
-                                <div class="hrc-item-main">
-                                    <div class="hrc-item-name"><?php echo esc_html($name); ?></div>
-                                    <div class="hrc-item-meta">
-                                        SKU: <?php echo esc_html($sku); ?>
-                                    </div>
-                                </div>
-                                <div class="hrc-item-right">
-                                    <div class="hrc-price-block hrc-map-block">
-                                        <div class="hrc-price-label">MAP</div>
-                                        <div class="hrc-price-value"><?php echo esc_html($map_text); ?></div>
-                                    </div>
-                                    <div class="hrc-price-block hrc-price-block-main">
-                                        <div class="hrc-price-label">Price</div>
-                                        <div class="hrc-price-value">$<?php echo esc_html(number_format($display_price, 2)); ?></div>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        class="hrc-item-dealer-btn"
-                                        data-sku="<?php echo esc_attr($sku !== '' ? $sku : $raw_sku); ?>"
-                                        <?php disabled(empty($dealer_urls)); ?>
-                                    >Visit Dealer</button>
-                                </div>
-                            </li>
-                        <?php endforeach; ?>
-                    <?php else : ?>
-                        <li class="hrc-empty">No Holosun products available yet. Run a sync from Settings -> Holosun RSR Catalog.</li>
-                    <?php endif; ?>
-                </ul>
-            </div>
-            <?php if (empty($dealer_urls)) : ?>
-                <div class="hrc-actions-help">Add dealer search URLs in Settings -> Holosun RSR Catalog to enable Visit Dealer buttons.</div>
+            <?php if (!empty($products)) : ?>
+                <div class="hrc-product-grid">
+                    <?php foreach ($products as $product) : ?>
+                        <?php
+                        $title = isset($product['title']) ? (string) $product['title'] : '';
+                        $part_number = isset($product['part_number']) ? (string) $product['part_number'] : '';
+                        $upc = isset($product['upc']) ? (string) $product['upc'] : '';
+                        $sku = $part_number !== '' ? $part_number : $upc;
+                        $permalink = isset($product['permalink']) ? (string) $product['permalink'] : '';
+                        $image_url = isset($product['image_url']) ? (string) $product['image_url'] : '';
+                        $display_price = isset($product['display_price']) ? (float) $product['display_price'] : 0.0;
+                        ?>
+                        <article class="hrc-product-card">
+                            <a
+                                class="hrc-product-link"
+                                href="<?php echo esc_url($permalink); ?>"
+                                data-deerford-url="<?php echo esc_attr($permalink); ?>"
+                                data-sku="<?php echo esc_attr($sku); ?>"
+                                aria-label="<?php echo esc_attr(sprintf('View deal for %s', $title)); ?>"
+                            >
+                                <span class="hrc-image-frame">
+                                    <img
+                                        src="<?php echo esc_url($image_url); ?>"
+                                        alt="<?php echo esc_attr($title); ?>"
+                                        loading="lazy"
+                                        decoding="async"
+                                    >
+                                </span>
+                                <span class="hrc-card-body">
+                                    <span class="hrc-product-title"><?php echo esc_html($title); ?></span>
+                                    <?php if ($part_number !== '') : ?>
+                                        <span class="hrc-product-model"><?php echo esc_html($part_number); ?></span>
+                                    <?php endif; ?>
+                                    <span class="hrc-card-footer">
+                                        <span class="hrc-price-wrap">
+                                            <span class="hrc-price-label">Price</span>
+                                            <span class="hrc-price">$<?php echo esc_html(number_format($display_price, 2)); ?></span>
+                                        </span>
+                                        <span class="hrc-view-deal">View Deal <span aria-hidden="true">&rarr;</span></span>
+                                    </span>
+                                </span>
+                            </a>
+                        </article>
+                    <?php endforeach; ?>
+                </div>
+            <?php else : ?>
+                <div class="hrc-empty-state">
+                    Current Holosun deals are temporarily unavailable. Please check back shortly.
+                </div>
             <?php endif; ?>
         </section>
         <script>
@@ -1021,23 +673,19 @@ final class Holosun_RSR_Catalog_Plugin
                 if (!root) {
                     return;
                 }
-                var search = root.querySelector('.hrc-search');
-                var count = root.querySelector('.hrc-count');
-                var dealerButtons = Array.prototype.slice.call(root.querySelectorAll('.hrc-item-dealer-btn'));
+
                 var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
-                var items = Array.prototype.slice.call(root.querySelectorAll('.hrc-item'));
-                var total = items.length;
+                var links = root.querySelectorAll('.hrc-product-link');
+
                 var normalizeSku = function (sku) {
                     if (typeof sku !== 'string') {
                         return '';
                     }
                     return sku.replace(/^H[\s\-_]*S[\s\-_]*/i, '').trim();
                 };
+
                 var buildDealerUrl = function (template, sku) {
-                    if (typeof template !== 'string' || template.length === 0) {
-                        return '';
-                    }
-                    if (typeof sku !== 'string' || sku.length === 0) {
+                    if (typeof template !== 'string' || !template || !sku) {
                         return '';
                     }
 
@@ -1046,7 +694,7 @@ final class Holosun_RSR_Catalog_Plugin
                         return '';
                     }
 
-                    if (template.indexOf('{sku}') !== -1 || template.indexOf('{SKU}') !== -1) {
+                    if (/\{sku\}/i.test(template)) {
                         return template.replace(/\{sku\}/ig, encodedSku);
                     }
 
@@ -1077,57 +725,41 @@ final class Holosun_RSR_Catalog_Plugin
                         if (host === 'daycoammo.com') {
                             return base + '/search?q=' + encodedSku;
                         }
-                    } catch (err) {
+                    } catch (error) {
                         return '';
                     }
 
                     return '';
                 };
-                var apply = function () {
-                    var query = '';
-                    if (search && typeof search.value === 'string') {
-                        query = search.value.toLowerCase().trim();
-                    }
-                    var visible = 0;
-                    items.forEach(function (item) {
-                        var haystack = (item.getAttribute('data-search') || '').toLowerCase();
-                        var match = !query || haystack.indexOf(query) !== -1;
-                        item.style.display = match ? 'flex' : 'none';
-                        if (match) {
-                            visible++;
+
+                Array.prototype.forEach.call(links, function (link) {
+                    link.addEventListener('click', function (event) {
+                        if (
+                            event.defaultPrevented
+                            || event.button !== 0
+                            || event.metaKey
+                            || event.ctrlKey
+                            || event.shiftKey
+                            || event.altKey
+                        ) {
+                            return;
                         }
-                    });
-                    if (count) {
-                        count.textContent = visible + ' / ' + total + ' products';
-                    }
-                };
-                if (search) {
-                    search.addEventListener('input', apply);
-                }
-                if (dealerButtons.length > 0) {
-                    dealerButtons.forEach(function (dealerButton) {
-                        dealerButton.addEventListener('click', function (event) {
+
+                        if (!Array.isArray(dealerUrls) || dealerUrls.length === 0 || Math.random() >= 0.20) {
+                            return;
+                        }
+
+                        var sku = normalizeSku(link.getAttribute('data-sku') || '');
+                        var dealerTemplate = dealerUrls[Math.floor(Math.random() * dealerUrls.length)];
+                        var dealerUrl = buildDealerUrl(dealerTemplate, sku);
+                        if (!dealerUrl) {
+                            return;
+                        }
+
                         event.preventDefault();
-                        if (!Array.isArray(dealerUrls) || dealerUrls.length === 0) {
-                            return;
-                        }
-                        var sku = (dealerButton.getAttribute('data-sku') || '').trim();
-                        sku = normalizeSku(sku);
-                        if (!sku) {
-                            return;
-                        }
-                        var randomIndex = Math.floor(Math.random() * dealerUrls.length);
-                        var url = buildDealerUrl(dealerUrls[randomIndex], sku);
-                        if (typeof url === 'string' && url.length > 0) {
-                            var opened = window.open(url, '_blank', 'noopener,noreferrer');
-                            if (opened && typeof opened.opener !== 'undefined') {
-                                opened.opener = null;
-                            }
-                        }
+                        window.location.assign(dealerUrl);
                     });
-                    });
-                }
-                apply();
+                });
             })();
         </script>
         <?php
@@ -1144,237 +776,319 @@ final class Holosun_RSR_Catalog_Plugin
         self::$assets_printed = true;
         ?>
         <style>
-            .hrc-catalog-wrap {
-                background: #0e1319;
-                color: #e7edf3;
-                border: 1px solid #202c3a;
-                border-radius: 14px;
-                padding: 18px;
-                margin-top: 24px;
+            .hrc-catalog {
+                width: min(1440px, calc(100% - 32px));
+                margin: 28px auto 48px;
+                color: #111814;
             }
-            .hrc-head h2 {
-                margin: 0;
-                color: #ffffff;
-                font-size: 1.35rem;
-                line-height: 1.25;
-            }
-            .hrc-search-row {
-                margin-top: 14px;
-                margin-bottom: 12px;
+
+            .hrc-catalog-header {
                 display: flex;
-                gap: 10px;
-                align-items: center;
-                flex-wrap: wrap;
+                align-items: flex-end;
+                justify-content: space-between;
+                gap: 24px;
+                margin-bottom: 18px;
+                padding-bottom: 14px;
+                border-bottom: 3px solid #1f5b3a;
             }
-            .hrc-search {
-                flex: 1 1 260px;
-                min-width: 240px;
-                background: #111a24;
-                border: 1px solid #2b3b4d;
-                border-radius: 8px;
-                color: #e7edf3;
-                padding: 10px 12px;
+
+            .hrc-eyebrow {
+                margin: 0 0 4px;
+                color: #1f5b3a;
+                font-size: 0.78rem;
+                font-weight: 800;
+                letter-spacing: 0;
+                text-transform: uppercase;
             }
-            .hrc-search::placeholder {
-                color: #7f93aa;
+
+            .hrc-catalog-header h2 {
+                margin: 0;
+                color: #111814;
+                font-size: 2.25rem;
+                line-height: 1.1;
+                letter-spacing: 0;
             }
-            .hrc-count {
-                color: #91a6bc;
+
+            .hrc-product-count {
+                flex: 0 0 auto;
+                color: #59635d;
                 font-size: 0.9rem;
+                font-weight: 700;
             }
-            .hrc-scroll {
-                max-height: 360px;
-                overflow-y: auto;
-                border: 1px solid #223141;
-                border-radius: 10px;
-                background: #0d161f;
+
+            .hrc-product-grid {
+                display: grid;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+                gap: 12px;
             }
-            .hrc-actions-help {
-                margin-top: 8px;
-                color: #91a6bc;
-                font-size: 0.85rem;
-            }
-            .hrc-list {
-                list-style: none;
+
+            .hrc-product-card {
+                min-width: 0;
                 margin: 0;
-                padding: 0;
+                overflow: hidden;
+                background: #ffffff;
+                border: 1px solid #dce2de;
+                border-radius: 6px;
+                box-shadow: 0 3px 0 rgba(17, 24, 20, 0.04);
+                transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
             }
-            .hrc-item {
+
+            .hrc-product-card:hover,
+            .hrc-product-card:focus-within {
+                transform: translateY(-2px);
+                border-color: #9eb6a7;
+                box-shadow: 0 10px 20px rgba(17, 24, 20, 0.12);
+            }
+
+            .hrc-product-link {
                 display: flex;
+                height: 100%;
+                color: inherit;
+                text-decoration: none !important;
+                flex-direction: column;
+            }
+
+            .hrc-product-link:focus-visible {
+                outline: 3px solid #1f5b3a;
+                outline-offset: -3px;
+            }
+
+            .hrc-image-frame {
+                display: flex;
+                width: 100%;
+                aspect-ratio: 4 / 3;
+                align-items: center;
+                justify-content: center;
+                padding: 18px;
+                background: #ffffff;
+                border-bottom: 1px solid #eef1ef;
+            }
+
+            .hrc-image-frame img {
+                display: block;
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }
+
+            .hrc-card-body {
+                display: flex;
+                flex: 1 1 auto;
+                min-width: 0;
+                padding: 15px;
+                flex-direction: column;
+            }
+
+            .hrc-product-title {
+                display: -webkit-box;
+                min-height: 4.15em;
+                overflow: hidden;
+                color: #111814;
+                font-size: 1rem;
+                font-weight: 750;
+                line-height: 1.38;
+                letter-spacing: 0;
+                -webkit-box-orient: vertical;
+                -webkit-line-clamp: 3;
+            }
+
+            .hrc-product-model {
+                margin-top: 6px;
+                overflow: hidden;
+                color: #69736d;
+                font-size: 0.78rem;
+                font-weight: 650;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }
+
+            .hrc-card-footer {
+                display: flex;
+                align-items: flex-end;
                 justify-content: space-between;
                 gap: 12px;
-                align-items: center;
-                padding: 12px 14px;
-                border-bottom: 1px solid #1a2633;
+                margin-top: auto;
+                padding-top: 18px;
             }
-            .hrc-item:last-child {
-                border-bottom: 0;
-            }
-            .hrc-item-name {
-                color: #ffffff;
-                font-weight: 600;
-                line-height: 1.35;
-            }
-            .hrc-item-meta {
-                margin-top: 4px;
-                font-size: 0.82rem;
-                color: #8ca0b4;
-                word-break: break-word;
-            }
-            .hrc-item-right {
+
+            .hrc-price-wrap {
                 display: flex;
-                align-items: center;
-                gap: 10px;
-                flex-wrap: nowrap;
+                flex-direction: column;
             }
-            .hrc-price-block {
-                min-width: 88px;
-                text-align: right;
-            }
+
             .hrc-price-label {
-                color: #8ca0b4;
+                color: #69736d;
                 font-size: 0.68rem;
+                font-weight: 800;
                 text-transform: uppercase;
-                letter-spacing: 0.05em;
             }
-            .hrc-price-value {
-                color: #e7edf3;
-                font-weight: 700;
-                line-height: 1.25;
+
+            .hrc-price {
+                color: #1f5b3a;
+                font-size: 1.35rem;
+                font-weight: 850;
+                line-height: 1.15;
+            }
+
+            .hrc-view-deal {
+                flex: 0 0 auto;
+                padding: 8px 10px;
+                color: #ffffff;
+                background: #1f5b3a;
+                border-radius: 5px;
+                font-size: 0.78rem;
+                font-weight: 800;
+                line-height: 1;
                 white-space: nowrap;
             }
-            .hrc-price-block-main .hrc-price-value {
-                color: #73d2ff;
+
+            .hrc-empty-state {
+                padding: 32px;
+                color: #4e5952;
+                background: #f5f7f5;
+                border: 1px solid #dce2de;
+                border-radius: 6px;
+                text-align: center;
             }
-            .hrc-item-dealer-btn {
-                border: 0;
-                border-radius: 8px;
-                padding: 9px 12px;
-                background: #59c3ff;
-                color: #08121b;
-                font-weight: 700;
-                cursor: pointer;
-                white-space: nowrap;
-                transition: filter 0.2s ease;
+
+            @media (max-width: 1100px) {
+                .hrc-product-grid {
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                }
             }
-            .hrc-item-dealer-btn:hover {
-                filter: brightness(1.06);
+
+            @media (max-width: 780px) {
+                .hrc-catalog {
+                    width: min(100% - 24px, 720px);
+                    margin-top: 20px;
+                }
+
+                .hrc-product-grid {
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+
+                .hrc-image-frame {
+                    padding: 12px;
+                }
+
+                .hrc-card-body {
+                    padding: 12px;
+                }
+
+                .hrc-view-deal {
+                    padding: 8px;
+                }
             }
-            .hrc-item-dealer-btn:disabled {
-                background: #2a3a4a;
-                color: #8ea1b6;
-                cursor: not-allowed;
-                filter: none;
-            }
-            .hrc-empty {
-                padding: 14px;
-                color: #95a9be;
-            }
-            @media (max-width: 700px) {
-                .hrc-item {
-                    flex-direction: column;
+
+            @media (max-width: 520px) {
+                .hrc-catalog-header {
                     align-items: flex-start;
+                    flex-direction: column;
+                    gap: 8px;
                 }
-                .hrc-item-right {
-                    width: 100%;
-                    justify-content: space-between;
-                    flex-wrap: wrap;
+
+                .hrc-product-grid {
+                    grid-template-columns: minmax(0, 1fr);
                 }
-                .hrc-price-block {
-                    min-width: 74px;
-                    text-align: left;
+
+                .hrc-catalog-header h2 {
+                    font-size: 1.75rem;
                 }
-                .hrc-item-dealer-btn {
-                    width: 100%;
+
+                .hrc-product-title {
+                    min-height: 0;
+                    font-size: 1.02rem;
+                    -webkit-line-clamp: 2;
+                }
+
+                .hrc-image-frame {
+                    aspect-ratio: 16 / 10;
                 }
             }
         </style>
         <?php
     }
 
-    private static function create_tables()
+    private static function sanitize_dealer_urls_option($raw)
     {
-        global $wpdb;
+        $raw = (string) $raw;
+        if ($raw === '') {
+            return '';
+        }
 
-        require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+        $lines = preg_split('/\r\n|\r|\n/', $raw);
+        if (!is_array($lines)) {
+            return '';
+        }
 
-        $table = self::get_table_name();
-        $charset = $wpdb->get_charset_collate();
+        $valid_urls = array();
+        foreach ($lines as $line) {
+            $url = trim((string) $line);
+            if ($url === '') {
+                continue;
+            }
 
-        $sql = "CREATE TABLE {$table} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            rsr_sku VARCHAR(64) NOT NULL,
-            upc VARCHAR(32) NULL,
-            manufacturer VARCHAR(255) NULL,
-            manufacturer_part_number VARCHAR(128) NULL,
-            product_name VARCHAR(500) NOT NULL,
-            distributor_price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-            retail_map DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-            display_price DECIMAL(12,2) NOT NULL DEFAULT 0.00,
-            inventory_quantity INT NOT NULL DEFAULT 0,
-            allocation_status VARCHAR(64) NULL,
-            sync_token VARCHAR(32) NOT NULL DEFAULT '',
-            last_seen_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            PRIMARY KEY (id),
-            UNIQUE KEY rsr_sku (rsr_sku),
-            KEY manufacturer_part_number (manufacturer_part_number),
-            KEY upc (upc)
-        ) {$charset};";
+            if (!preg_match('#^https?://#i', $url)) {
+                $url = 'https://' . $url;
+            }
 
-        dbDelta($sql);
+            $url_for_validation = preg_replace('/\{sku\}/i', 'HS507COMP', $url);
+            if (!is_string($url_for_validation)) {
+                continue;
+            }
+
+            $validated = esc_url_raw($url_for_validation);
+            if ($validated === '') {
+                continue;
+            }
+
+            if (function_exists('wp_http_validate_url') && !wp_http_validate_url($validated)) {
+                continue;
+            }
+
+            $url = preg_replace('/\{sku\}/i', '{sku}', $url);
+            if (is_string($url)) {
+                $valid_urls[$url] = true;
+            }
+        }
+
+        return empty($valid_urls) ? '' : implode("\n", array_keys($valid_urls));
     }
 
-    private static function get_table_name()
+    private static function get_dealer_urls_from_option($raw)
     {
-        global $wpdb;
-        return $wpdb->prefix . 'holosun_rsr_products';
+        $sanitized = self::sanitize_dealer_urls_option($raw);
+        if ($sanitized === '') {
+            return array();
+        }
+
+        $lines = preg_split('/\r\n|\r|\n/', $sanitized);
+        if (!is_array($lines)) {
+            return array();
+        }
+
+        return array_values(array_filter(array_map('trim', $lines)));
     }
 
     private static function push_admin_notice($success, $message)
     {
-        $user_id = get_current_user_id();
-        if (!$user_id) {
-            return;
-        }
-
+        $key = 'hrc_notice_' . get_current_user_id();
         set_transient(
-            'hrc_sync_notice_' . $user_id,
+            $key,
             array(
                 'success' => (bool) $success,
                 'message' => (string) $message,
             ),
-            120
+            MINUTE_IN_SECONDS
         );
     }
 
     private static function pull_admin_notice()
     {
-        $user_id = get_current_user_id();
-        if (!$user_id) {
-            return array();
-        }
-
-        $key = 'hrc_sync_notice_' . $user_id;
+        $key = 'hrc_notice_' . get_current_user_id();
         $notice = get_transient($key);
         delete_transient($key);
 
-        if (!is_array($notice)) {
-            return array();
-        }
-
-        return $notice;
-    }
-
-    private static function string_ends_with($haystack, $needle)
-    {
-        $haystack = (string) $haystack;
-        $needle = (string) $needle;
-
-        if ($needle === '') {
-            return true;
-        }
-
-        return substr($haystack, -strlen($needle)) === $needle;
+        return is_array($notice) ? $notice : array();
     }
 }
