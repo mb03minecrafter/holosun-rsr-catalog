@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '2.1.1';
+    const VERSION = '2.1.2';
 
     const OPTION_SETTINGS = 'hrc_settings';
     const OPTION_CATALOG_CACHE = 'hrc_phoenix_catalog_cache_v2';
@@ -906,9 +906,9 @@ final class Holosun_RSR_Catalog_Plugin
                 $group_key = 'magnifiers';
             } elseif (preg_match('/\b(p\.id|pid|iris|weapon light|flashlight|laser|mount|adapter|plate|battery|cover|spacer|riser)\b/i', $searchable)) {
                 $group_key = 'accessories';
-            } elseif (preg_match('/\b(eps|507|407|508|509|scs|k-series|k series|competition)\b/i', $searchable)) {
+            } elseif (preg_match('/(eps|507|407|508|509|scs|k-series|k series|competition)/i', $searchable)) {
                 $group_key = 'pistol';
-            } elseif (preg_match('/\b(aems|510|512|515|530|503|403|scrs|aro|drs|raid|thermal|night vision)\b/i', $searchable)) {
+            } elseif (preg_match('/(aems|510|512|515|530|503|403|scrs|aro|drs|raid|thermal|night vision)/i', $searchable)) {
                 $group_key = 'rifle';
             } else {
                 $group_key = 'other';
