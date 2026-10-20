@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Holosun Phoenix Catalog
  * Description: Renders current Holosun products and pricing from Phoenix as a responsive dealer-routing catalog.
- * Version: 2.1.2
+ * Version: 2.1.3
  * Author: HolosunDeals
  * License: GPL-2.0-or-later
  * Text Domain: holosun-rsr-catalog

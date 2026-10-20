@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '2.1.2';
+    const VERSION = '2.1.3';
 
     const OPTION_SETTINGS = 'hrc_settings';
     const OPTION_CATALOG_CACHE = 'hrc_phoenix_catalog_cache_v2';
@@ -932,9 +932,14 @@ final class Holosun_RSR_Catalog_Plugin
         ?>
         <style>
             .hrc-catalog {
+                box-sizing: border-box;
                 width: min(1440px, calc(100% - 32px));
                 margin: 28px auto 48px;
                 color: var(--theme-text-color, #e7edf3);
+            }
+
+            .hrc-catalog * {
+                box-sizing: border-box;
             }
 
             .hrc-catalog-header {
@@ -957,11 +962,18 @@ final class Holosun_RSR_Catalog_Plugin
             }
 
             .hrc-catalog-header h2 {
+                max-width: 100%;
                 margin: 0;
                 color: var(--theme-headings-color, #ffffff);
                 font-size: 2.25rem;
                 line-height: 1.1;
                 letter-spacing: 0;
+                overflow-wrap: break-word;
+                white-space: normal;
+            }
+
+            .hrc-catalog-header > div {
+                min-width: 0;
             }
 
             .hrc-product-count {
@@ -983,6 +995,7 @@ final class Holosun_RSR_Catalog_Plugin
 
             .hrc-category-nav {
                 display: flex;
+                max-width: 100%;
                 gap: 8px;
                 margin-bottom: 14px;
                 overflow-x: auto;
@@ -1229,7 +1242,8 @@ final class Holosun_RSR_Catalog_Plugin
 
             @media (max-width: 780px) {
                 .hrc-catalog {
-                    width: min(100% - 24px, 720px);
+                    width: min(calc(100% - 24px), 720px);
+                    max-width: calc(100% - 24px);
                     margin-top: 20px;
                 }
 
