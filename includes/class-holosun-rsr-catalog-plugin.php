@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '2.0.0';
+    const VERSION = '2.1.0';
 
     const OPTION_SETTINGS = 'hrc_settings';
     const OPTION_CATALOG_CACHE = 'hrc_phoenix_catalog_cache_v2';
@@ -616,8 +616,11 @@ final class Holosun_RSR_Catalog_Plugin
             isset($settings['dealer_urls']) ? $settings['dealer_urls'] : ''
         );
         $products = self::get_catalog_for_render();
+        $product_groups = self::group_products_for_display($products);
+        $catalog_cache = self::read_catalog_cache();
+        $updated_at = isset($catalog_cache['updated_at']) ? (int) $catalog_cache['updated_at'] : 0;
         $container_id = 'hrc-catalog-' . wp_rand(1000, 999999);
-        $grid_id = $container_id . '-grid';
+        $groups_id = $container_id . '-groups';
         $search_id = $container_id . '-search';
 
         ob_start();
@@ -627,14 +630,24 @@ final class Holosun_RSR_Catalog_Plugin
             <header class="hrc-catalog-header">
                 <div>
                     <p class="hrc-eyebrow">Updated Holosun pricing</p>
-                    <h2 id="<?php echo esc_attr($container_id); ?>-title">Shop Holosun Deals</h2>
+                    <h2 id="<?php echo esc_attr($container_id); ?>-title">Browse Current Holosun Deals</h2>
                 </div>
                 <?php if (!empty($products)) : ?>
-                    <span class="hrc-product-count" aria-live="polite"><?php echo esc_html(number_format_i18n(count($products))); ?> products</span>
+                    <span class="hrc-product-count" aria-live="polite">
+                        <?php echo esc_html(number_format_i18n(count($products))); ?> products
+                        <?php if ($updated_at > 0) : ?>
+                            <small>Updated <?php echo esc_html(wp_date('M j, g:i a', $updated_at)); ?></small>
+                        <?php endif; ?>
+                    </span>
                 <?php endif; ?>
             </header>
 
             <?php if (!empty($products)) : ?>
+                <nav class="hrc-category-nav" aria-label="Holosun deal categories">
+                    <?php foreach ($product_groups as $group) : ?>
+                        <a href="#<?php echo esc_attr($group['id']); ?>"><?php echo esc_html($group['label']); ?></a>
+                    <?php endforeach; ?>
+                </nav>
                 <div class="hrc-search-wrap">
                     <label class="screen-reader-text" for="<?php echo esc_attr($search_id); ?>">Search Holosun products</label>
                     <input
@@ -643,54 +656,65 @@ final class Holosun_RSR_Catalog_Plugin
                         type="search"
                         placeholder="Search by product, model, or UPC"
                         autocomplete="off"
-                        aria-controls="<?php echo esc_attr($grid_id); ?>"
+                        aria-controls="<?php echo esc_attr($groups_id); ?>"
                     >
                 </div>
-                <div class="hrc-product-grid" id="<?php echo esc_attr($grid_id); ?>">
-                    <?php foreach ($products as $product) : ?>
-                        <?php
-                        $title = isset($product['title']) ? (string) $product['title'] : '';
-                        $part_number = isset($product['part_number']) ? (string) $product['part_number'] : '';
-                        $upc = isset($product['upc']) ? (string) $product['upc'] : '';
-                        $sku = $part_number !== '' ? $part_number : $upc;
-                        $permalink = isset($product['permalink']) ? (string) $product['permalink'] : '';
-                        $image_url = isset($product['image_url']) ? (string) $product['image_url'] : '';
-                        $display_price = isset($product['display_price']) ? (float) $product['display_price'] : 0.0;
-                        ?>
-                        <article
-                            class="hrc-product-card"
-                            data-search="<?php echo esc_attr(trim($title . ' ' . $part_number . ' ' . $upc)); ?>"
-                        >
-                            <a
-                                class="hrc-product-link"
-                                href="<?php echo esc_url($permalink); ?>"
-                                data-deerford-url="<?php echo esc_attr($permalink); ?>"
-                                data-sku="<?php echo esc_attr($sku); ?>"
-                                aria-label="<?php echo esc_attr(sprintf('View deal for %s', $title)); ?>"
-                            >
-                                <span class="hrc-image-frame">
-                                    <img
-                                        src="<?php echo esc_url($image_url); ?>"
-                                        alt="<?php echo esc_attr($title); ?>"
-                                        loading="lazy"
-                                        decoding="async"
+                <p class="hrc-pricing-note">Prices and availability can change. Confirm the final price, shipping, taxes, availability, and terms on the retailer's website.</p>
+                <div class="hrc-product-groups" id="<?php echo esc_attr($groups_id); ?>">
+                    <?php foreach ($product_groups as $group) : ?>
+                        <section class="hrc-product-group" id="<?php echo esc_attr($group['id']); ?>" data-hrc-group>
+                            <header class="hrc-group-header">
+                                <h3><?php echo esc_html($group['heading']); ?></h3>
+                                <span><?php echo esc_html(number_format_i18n(count($group['products']))); ?> products</span>
+                            </header>
+                            <div class="hrc-product-grid">
+                                <?php foreach ($group['products'] as $product) : ?>
+                                    <?php
+                                    $title = isset($product['title']) ? (string) $product['title'] : '';
+                                    $part_number = isset($product['part_number']) ? (string) $product['part_number'] : '';
+                                    $upc = isset($product['upc']) ? (string) $product['upc'] : '';
+                                    $sku = $part_number !== '' ? $part_number : $upc;
+                                    $permalink = isset($product['permalink']) ? (string) $product['permalink'] : '';
+                                    $image_url = isset($product['image_url']) ? (string) $product['image_url'] : '';
+                                    $display_price = isset($product['display_price']) ? (float) $product['display_price'] : 0.0;
+                                    ?>
+                                    <article
+                                        class="hrc-product-card"
+                                        data-search="<?php echo esc_attr(trim($title . ' ' . $part_number . ' ' . $upc)); ?>"
                                     >
-                                </span>
-                                <span class="hrc-card-body">
-                                    <span class="hrc-product-title"><?php echo esc_html($title); ?></span>
-                                    <?php if ($part_number !== '') : ?>
-                                        <span class="hrc-product-model"><?php echo esc_html($part_number); ?></span>
-                                    <?php endif; ?>
-                                    <span class="hrc-card-footer">
-                                        <span class="hrc-price-wrap">
-                                            <span class="hrc-price-label">Price</span>
-                                            <span class="hrc-price">$<?php echo esc_html(number_format($display_price, 2)); ?></span>
-                                        </span>
-                                        <span class="hrc-view-deal">View Deal <span aria-hidden="true">&rarr;</span></span>
-                                    </span>
-                                </span>
-                            </a>
-                        </article>
+                                        <a
+                                            class="hrc-product-link"
+                                            href="<?php echo esc_url($permalink); ?>"
+                                            data-deerford-url="<?php echo esc_attr($permalink); ?>"
+                                            data-sku="<?php echo esc_attr($sku); ?>"
+                                            aria-label="<?php echo esc_attr(sprintf('View deal for %s', $title)); ?>"
+                                        >
+                                            <span class="hrc-image-frame">
+                                                <img
+                                                    src="<?php echo esc_url($image_url); ?>"
+                                                    alt="<?php echo esc_attr($title); ?>"
+                                                    loading="lazy"
+                                                    decoding="async"
+                                                >
+                                            </span>
+                                            <span class="hrc-card-body">
+                                                <span class="hrc-product-title"><?php echo esc_html($title); ?></span>
+                                                <?php if ($part_number !== '') : ?>
+                                                    <span class="hrc-product-model"><?php echo esc_html($part_number); ?></span>
+                                                <?php endif; ?>
+                                                <span class="hrc-card-footer">
+                                                    <span class="hrc-price-wrap">
+                                                        <span class="hrc-price-label">Listed price</span>
+                                                        <span class="hrc-price">$<?php echo esc_html(number_format($display_price, 2)); ?></span>
+                                                    </span>
+                                                    <span class="hrc-view-deal">View Deal <span aria-hidden="true">&rarr;</span></span>
+                                                </span>
+                                            </span>
+                                        </a>
+                                    </article>
+                                <?php endforeach; ?>
+                            </div>
+                        </section>
                     <?php endforeach; ?>
                 </div>
                 <div class="hrc-no-results" hidden>No Holosun products match that search.</div>
@@ -710,6 +734,7 @@ final class Holosun_RSR_Catalog_Plugin
                 var dealerUrls = <?php echo wp_json_encode(array_values($dealer_urls)); ?>;
                 var links = root.querySelectorAll('.hrc-product-link');
                 var cards = root.querySelectorAll('.hrc-product-card');
+                var groups = root.querySelectorAll('[data-hrc-group]');
                 var search = root.querySelector('.hrc-search');
                 var count = root.querySelector('.hrc-product-count');
                 var noResults = root.querySelector('.hrc-no-results');
@@ -726,6 +751,10 @@ final class Holosun_RSR_Catalog_Plugin
                             if (matches) {
                                 visibleCount += 1;
                             }
+                        });
+
+                        Array.prototype.forEach.call(groups, function (group) {
+                            group.hidden = group.querySelectorAll('.hrc-product-card:not([hidden])').length === 0;
                         });
 
                         if (count) {
@@ -827,6 +856,67 @@ final class Holosun_RSR_Catalog_Plugin
         return (string) ob_get_clean();
     }
 
+    private static function group_products_for_display($products)
+    {
+        $groups = array(
+            'pistol' => array(
+                'id' => 'holosun-pistol-optics',
+                'label' => 'Pistol Optics',
+                'heading' => 'Holosun Pistol Optic Deals',
+                'products' => array(),
+            ),
+            'rifle' => array(
+                'id' => 'holosun-rifle-optics',
+                'label' => 'Rifle Optics',
+                'heading' => 'Holosun Rifle and Carbine Optic Deals',
+                'products' => array(),
+            ),
+            'magnifiers' => array(
+                'id' => 'holosun-magnifiers',
+                'label' => 'Magnifiers',
+                'heading' => 'Holosun Magnifier Deals',
+                'products' => array(),
+            ),
+            'accessories' => array(
+                'id' => 'holosun-accessories',
+                'label' => 'Lights & Accessories',
+                'heading' => 'Holosun Lights, Lasers, and Accessories',
+                'products' => array(),
+            ),
+            'other' => array(
+                'id' => 'other-holosun-products',
+                'label' => 'Other Products',
+                'heading' => 'More Holosun Deals',
+                'products' => array(),
+            ),
+        );
+
+        foreach ((array) $products as $product) {
+            $searchable = strtolower(trim(
+                (isset($product['title']) ? (string) $product['title'] : '') . ' ' .
+                (isset($product['part_number']) ? (string) $product['part_number'] : '')
+            ));
+
+            if (preg_match('/\b(magnifier|hm3x|hm3xt|hm6x)\b/i', $searchable)) {
+                $group_key = 'magnifiers';
+            } elseif (preg_match('/\b(p\.id|pid|iris|weapon light|flashlight|laser|mount|adapter|plate|battery|cover|spacer|riser)\b/i', $searchable)) {
+                $group_key = 'accessories';
+            } elseif (preg_match('/\b(eps|507|407|508|509|scs|k-series|k series|competition)\b/i', $searchable)) {
+                $group_key = 'pistol';
+            } elseif (preg_match('/\b(aems|510|512|515|530|503|403|scrs|aro|drs|raid|thermal|night vision)\b/i', $searchable)) {
+                $group_key = 'rifle';
+            } else {
+                $group_key = 'other';
+            }
+
+            $groups[$group_key]['products'][] = $product;
+        }
+
+        return array_values(array_filter($groups, function ($group) {
+            return !empty($group['products']);
+        }));
+    }
+
     private static function print_frontend_assets()
     {
         if (self::$assets_printed) {
@@ -870,10 +960,50 @@ final class Holosun_RSR_Catalog_Plugin
             }
 
             .hrc-product-count {
+                display: flex;
                 flex: 0 0 auto;
                 color: #91a6bc;
                 font-size: 0.9rem;
                 font-weight: 700;
+                text-align: right;
+                flex-direction: column;
+            }
+
+            .hrc-product-count small {
+                margin-top: 2px;
+                color: #71869b;
+                font-size: 0.72rem;
+                font-weight: 600;
+            }
+
+            .hrc-category-nav {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 14px;
+                overflow-x: auto;
+                padding-bottom: 2px;
+                scrollbar-width: thin;
+            }
+
+            .hrc-category-nav a {
+                flex: 0 0 auto;
+                padding: 8px 10px;
+                color: var(--theme-text-color, #e7edf3);
+                background: #111a24;
+                border: 1px solid var(--theme-border-color, #2a3340);
+                border-radius: 4px;
+                font-size: 0.82rem;
+                font-weight: 750;
+                line-height: 1;
+                text-decoration: none !important;
+            }
+
+            .hrc-category-nav a:hover,
+            .hrc-category-nav a:focus-visible {
+                color: #08121b;
+                background: var(--theme-link-initial-color, #59c3ff);
+                border-color: var(--theme-link-initial-color, #59c3ff);
+                outline: none;
             }
 
             .hrc-product-grid {
@@ -884,6 +1014,44 @@ final class Holosun_RSR_Catalog_Plugin
 
             .hrc-search-wrap {
                 margin-bottom: 16px;
+            }
+
+            .hrc-pricing-note {
+                margin: -4px 0 24px;
+                color: #91a6bc;
+                font-size: 0.84rem;
+                line-height: 1.55;
+            }
+
+            .hrc-product-group {
+                scroll-margin-top: 24px;
+            }
+
+            .hrc-product-group + .hrc-product-group {
+                margin-top: 34px;
+            }
+
+            .hrc-group-header {
+                display: flex;
+                align-items: baseline;
+                justify-content: space-between;
+                gap: 18px;
+                margin-bottom: 12px;
+            }
+
+            .hrc-group-header h3 {
+                margin: 0;
+                color: var(--theme-headings-color, #ffffff);
+                font-size: 1.45rem;
+                line-height: 1.25;
+                letter-spacing: 0;
+            }
+
+            .hrc-group-header span {
+                flex: 0 0 auto;
+                color: #71869b;
+                font-size: 0.78rem;
+                font-weight: 650;
             }
 
             .hrc-search {
@@ -1090,6 +1258,20 @@ final class Holosun_RSR_Catalog_Plugin
 
                 .hrc-catalog-header h2 {
                     font-size: 1.75rem;
+                }
+
+                .hrc-product-count {
+                    text-align: left;
+                }
+
+                .hrc-group-header {
+                    align-items: flex-start;
+                    flex-direction: column;
+                    gap: 3px;
+                }
+
+                .hrc-group-header h3 {
+                    font-size: 1.25rem;
                 }
 
                 .hrc-product-title {

@@ -7,7 +7,7 @@ Standalone WordPress plugin for `holosundeals.com` that:
 - Displays a stable, product-specific 1-3% price uplift
 - Keeps the last complete catalog available if Phoenix is temporarily unavailable
 - Refreshes its server-side cache every five minutes
-- Renders a responsive, image-led product-card grid
+- Renders a responsive, searchable product catalog grouped into crawlable shopping categories
 - Routes normal clicks to Deerford Defense 80% of the time and a random configured partner dealer 20% of the time
 
 ## WordPress Usage
