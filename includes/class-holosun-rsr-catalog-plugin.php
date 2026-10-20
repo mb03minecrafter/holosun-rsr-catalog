@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 final class Holosun_RSR_Catalog_Plugin
 {
-    const VERSION = '2.1.0';
+    const VERSION = '2.1.1';
 
     const OPTION_SETTINGS = 'hrc_settings';
     const OPTION_CATALOG_CACHE = 'hrc_phoenix_catalog_cache_v2';
@@ -600,7 +600,12 @@ final class Holosun_RSR_Catalog_Plugin
             return $content;
         }
 
-        if (has_shortcode((string) $content, self::SHORTCODE)) {
+        $front_page_id = (int) get_option('page_on_front');
+        $raw_content = $front_page_id > 0
+            ? (string) get_post_field('post_content', $front_page_id)
+            : '';
+
+        if (has_shortcode($raw_content, self::SHORTCODE)) {
             return $content;
         }
 
